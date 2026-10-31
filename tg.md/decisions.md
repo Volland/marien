@@ -3,7 +3,7 @@ type: Decision
 status: accepted  # per section: see each status:: line
 date: 2026-10-31
 owner: Volodymyr Pavlyshyn
-specs: ["adr:0001", "adr:0002", "adr:0003", "adr:0004", "adr:0005", "adr:0006", "adr:0007", "adr:0008", "adr:0009", "adr:0010", "adr:0011", "adr:0012", "adr:0013", "adr:0014", "adr:0015", "adr:0016", "adr:0017", "adr:0018", "adr:0019", "adr:0020", "adr:0021"]
+specs: ["adr:0022", "adr:0001", "adr:0002", "adr:0003", "adr:0004", "adr:0005", "adr:0006", "adr:0007", "adr:0008", "adr:0009", "adr:0010", "adr:0011", "adr:0012", "adr:0013", "adr:0014", "adr:0015", "adr:0016", "adr:0017", "adr:0018", "adr:0019", "adr:0020", "adr:0021"]
 ---
 # Decisions
 
@@ -185,7 +185,7 @@ Record: [ADR 0016](../docs/adr/0016-partitioned-validation.md).
 
 Marien lives in its own repository, pinned to a LadybugDB version, and is installed with `INSTALL marien FROM <url>`; contributing it to `ladybugdb/extensions` is proposed once stable.
 
-**Context.** Upstream builds with CMake and has no Lean toolchain. **Consequences.** CI builds a matrix of LadybugDB version, OS and CPU. The roughly 45 MB size and GMP or libuv symbol clashes are measured in the first build.
+**Context.** Upstream builds with CMake and has no Lean toolchain. **Consequences.** CI builds a matrix of LadybugDB version, OS and CPU. The spike measured 2.7 MB uncompressed and 0.8 MB gzipped on macOS arm64 with dead-stripping, and no symbol clashes with other extensions.
 
 Record: [ADR 0017](../docs/adr/0017-out-of-tree-extension-with-its-own-repository.md).
 
@@ -239,3 +239,16 @@ Record: [ADR 0021](../docs/adr/0021-scan-tables-in-the-calling-transaction.md).
 - status:: accepted
 - motivated_by:: [[decisions#Materialize facts per call]] {weight: primary}
 - motivated_by:: [[constraints#Extensions are C++ shared libraries]]
+
+## Runtime-only Lean initialization
+
+The runtime bridge defines its own `lean_initialize` that starts only the Lean runtime, and the extension never links `libleancpp`, so module initializers do not pull in the Lean compiler package.
+
+**Context.** Lean 4.35 module initializers call `lean_initialize`, whose toolchain version initializes the compiler package; LeanElpi's FFI library inherits that. **Consequences.** The extension is 2.7 MB instead of 68 MB and starts in about 12 ms. Lean code linked into the extension must not depend on the C++ kernel (`Lean.Expr` primitives, `MetaM`); the link fails with undefined `lean_*` symbols if it does, because `libleancpp` is absent. A Lean upgrade must re-check that `lean_initialize` is still the only hook.
+
+Record: [ADR 0022](../docs/adr/0022-runtime-only-lean-initialization.md).
+
+- status:: accepted
+- motivated_by:: [[constraints#Lean module initializers call lean_initialize]] {weight: primary}
+- motivated_by:: [[decisions#Logic in Lean behind a thin C++ shim]]
+

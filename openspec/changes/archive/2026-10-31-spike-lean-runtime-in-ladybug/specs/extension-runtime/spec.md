@@ -41,7 +41,7 @@ The extension SHALL be built with hidden symbol visibility, and its dynamic symb
 - **THEN** the list contains only the extension loader's entry points
 
 #### Scenario: Coexists with another extension
-- **WHEN** the extension and LadybugDB's `algo` and `fts` extensions are loaded in the same database and each is used
+- **WHEN** the extension and two official LadybugDB extensions that bundle native libraries (`fts` and `vector`; `algo` once its macOS package loads) are loaded in the same database and each is used
 - **THEN** all three work and none resolves a symbol into another's copy of a library
 
 ### Requirement: Size budget is measured

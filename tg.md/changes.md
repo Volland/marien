@@ -10,11 +10,16 @@ The OpenSpec changes that build Marien, one per milestone, in build order. Each 
 
 Spike: load a Lean-runtime shared library into LadybugDB and call it from a worker thread, to measure size and symbol clashes before committing.
 
-- status:: proposed
+- status:: archived
+- date:: 2026-10-31
+
+Archived to `openspec/changes/archive/2026-10-31-spike-lean-runtime-in-ladybug/`; its `extension-runtime` requirements now live in `openspec/specs/extension-runtime/spec.md`. Verdict and evidence: `spike/RESULT.md` (macOS go; Linux go with `libleanrt.a` rebuilt by `scripts/build-leanrt-pic.sh`).
 
 ## add-leanelpi-host-api
 
 M0: the LeanElpi 0.4 API Marien needs: entry-point signatures, structured result terms, resumable fuel and a public clause AST. Implemented in the lean-elpi repository.
+
+The engine side is done as lean-elpi change `add-host-api` (module `Elpi.Host`, branch `add-host-api`, with its three proofs), not yet released. Marien's pin, contract tests and annotations wait for the release.
 
 - status:: proposed
 

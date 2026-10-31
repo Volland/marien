@@ -24,7 +24,7 @@ Rejected: Own repository, pinned LadybugDB version, own extension server (`INSTA
 ### Consequences
 
 * Good, because releases do not wait for upstream.
-* Bad, because a CI matrix of LadybugDB version, OS and CPU is needed, and the library is large (about 45 MB) with possible GMP and libuv symbol clashes.
+* Bad, because a CI matrix of LadybugDB version, OS and CPU is needed, and Lean, GMP and libuv must stay hidden inside the library. The spike measured 2.7 MB uncompressed and 0.8 MB gzipped on macOS arm64 ([ADR 0022](0022-runtime-only-lean-initialization.md)).
 
 ## More Information
 

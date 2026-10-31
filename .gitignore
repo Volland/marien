@@ -1,2 +1,5 @@
 .omc/
 .DS_Store
+.deps/
+spike/.lake/
+spike/build/

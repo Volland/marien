@@ -1,0 +1,2 @@
+# platform  gzip-9 bytes of the stripped extension (update when growth is intended)
+osx-arm64 871701

@@ -1,0 +1,60 @@
+# Extension runtime checks (openspec capability `extension-runtime`): build the spike extension
+# against the pinned LadybugDB and check dependencies, exports, size budget and runtime behaviour.
+name: extension-runtime
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  macos-arm64:
+    runs-on: macos-14
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lean (elan)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Fetch pinned LadybugDB
+        run: scripts/fetch-ladybug.sh
+      - name: Build spike extension (both link modes)
+        run: |
+          cd spike && lake update
+          ./build.sh nostrip && cp build/libmarien_spike.lbug_extension build/nostrip.lbug_extension
+          ./build.sh strip
+      - name: Dependencies
+        run: scripts/check-deps.sh spike/build/libmarien_spike.lbug_extension
+      - name: Exports
+        run: scripts/check-exports.sh spike/build/libmarien_spike.lbug_extension
+      - name: Size report and budget
+        run: |
+          scripts/size-report.sh spike/build/libmarien_spike.lbug_extension spike/build/nostrip.lbug_extension
+          scripts/test-check-size.sh
+          scripts/check-size.sh spike/build/libmarien_spike.lbug_extension
+      - name: Runtime behaviour
+        run: |
+          /usr/bin/clang -O2 -I.deps/cli -o spike/build/stress spike/stress.c -L.deps/cli -llbug -Wl,-rpath,$PWD/.deps/cli
+          EXT=$PWD/spike/build/libmarien_spike.lbug_extension
+          mkdir -p /tmp/db
+          spike/build/stress load /tmp/db "$EXT"
+          MARIEN_SPIKE_FAIL_INIT=1 spike/build/stress failinit /tmp/db "$EXT"
+          spike/build/stress stress /tmp/db "$EXT" 16 1000
+      - name: Coexistence with fts and vector
+        run: spike/coexist.sh spike/build/libmarien_spike.lbug_extension
+
+  linux-aarch64:
+    # The whole Linux leg runs in a fresh Ubuntu 24.04 container (spike/linux/run.sh): it
+    # rebuilds the Lean runtime archive as PIC (scripts/build-leanrt-pic.sh), builds the spike
+    # with it and runs the dependency, export, load, failed-init, stress and coexistence checks.
+    runs-on: ubuntu-24.04-arm
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned LadybugDB source
+        run: git clone -q --depth 1 --branch "v$(cat scripts/ladybug-version)" https://github.com/LadybugDB/ladybug .deps/ladybug
+      - name: Build and check in Docker
+        run: spike/linux/docker.sh

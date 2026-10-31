@@ -12,7 +12,7 @@ How they fit together is in [[architecture#Layers]]; flows are drawn in [[uml]].
 
 Registers Marien's table functions with LadybugDB and implements their bind, execute and rewriteFunc callbacks; owns no logic beyond marshalling. Source: `shim/extension.cpp`.
 
-Exports only the extension init symbol; everything else is hidden so the bundled Lean runtime, GMP and libuv cannot clash with symbols of LadybugDB or other extensions.
+Exports only the loader entry points `init` and `name`; everything else is hidden so the bundled Lean runtime, GMP and libuv cannot clash with symbols of LadybugDB or other extensions. Compiled with the platform's system C++ compiler against the pinned LadybugDB headers plus the CMake-generated ones, and linked by `scripts/link-extension.sh`. Prototype: `spike/shim.cpp`.
 
 - module:: shim/extension.cpp
 - milestone:: Spike
@@ -26,12 +26,13 @@ Exports only the extension init symbol; everything else is hidden so the bundled
 
 The C ABI between shim and Lean: runtime start-up, per-thread initialization, handles, UTF-8 strings and flat fact and row buffers. Source: `Marien/Ffi.lean`, `shim/lean_bridge.c`.
 
-Follows LeanElpi's `ensure_thread` pattern: a thread-local flag calls `lean_initialize_thread` once per LadybugDB worker thread.
+Follows LeanElpi's `ensure_thread` pattern: a thread-local flag calls `lean_initialize_thread` once per LadybugDB worker thread. Starts the runtime once per process under `pthread_once`, and defines a runtime-only `lean_initialize` so the Lean compiler package is never linked. Prototype: `spike/bridge.c`. The Lean side calls LeanElpi only through its `Elpi.Host` module (signatures, goals from terms, fuel slices, facts as terms, clause AST).
 
 - module:: Marien.Ffi
 - milestone:: Spike
 - motivated_by:: [[decisions#Logic in Lean behind a thin C++ shim]]
 - motivated_by:: [[constraints#One Lean runtime per process]]
+- motivated_by:: [[decisions#Runtime-only Lean initialization]]
 - introduced_by:: [[changes#spike-lean-runtime-in-ladybug]]
 
 ## Catalog reader

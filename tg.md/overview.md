@@ -26,4 +26,3 @@ Points the design interview of 2026-10-31 left open; each needs an answer before
 
 - Soundness proofs of the monotonicity and locality checks: a stretch goal under [[decisions#Proofs where practical]], guarded by property tests until done.
 - Whether LadybugDB will accept upstream patches for DDL hooks and for hosting the extension.
-- How far dead-stripping shrinks the roughly 45 MB extension.
