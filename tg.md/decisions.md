@@ -3,7 +3,7 @@ type: Decision
 status: accepted  # per section: see each status:: line
 date: 2026-10-31
 owner: Volodymyr Pavlyshyn
-specs: ["adr:0022", "adr:0001", "adr:0002", "adr:0003", "adr:0004", "adr:0005", "adr:0006", "adr:0007", "adr:0008", "adr:0009", "adr:0010", "adr:0011", "adr:0012", "adr:0013", "adr:0014", "adr:0015", "adr:0016", "adr:0017", "adr:0018", "adr:0019", "adr:0020", "adr:0021"]
+specs: ["adr:0023", "adr:0022", "adr:0001", "adr:0002", "adr:0003", "adr:0004", "adr:0005", "adr:0006", "adr:0007", "adr:0008", "adr:0009", "adr:0010", "adr:0011", "adr:0012", "adr:0013", "adr:0014", "adr:0015", "adr:0016", "adr:0017", "adr:0018", "adr:0019", "adr:0020", "adr:0021"]
 ---
 # Decisions
 
@@ -252,3 +252,15 @@ Record: [ADR 0022](../docs/adr/0022-runtime-only-lean-initialization.md).
 - motivated_by:: [[constraints#Lean module initializers call lean_initialize]] {weight: primary}
 - motivated_by:: [[decisions#Logic in Lean behind a thin C++ shim]]
 
+## Call LeanElpi only through its host façade
+
+Marien calls LeanElpi only through LeanElpi's `Elpi.Host` module, wrapped once in `Marien.Engine`; no other Marien module imports the engine.
+
+**Context.** Marien needs signatures, goals from terms, structured solutions, resumable slices, facts as terms and the clause AST, which LeanElpi 0.3.3 keeps in internal modules or lacks. **Consequences.** An engine upgrade touches one file, and `tests/EngineContract.lean` checks every scenario of `engine-host-api` against the pinned release. LeanElpi commits to a public AST and result-term type. Until 0.4.0 is released Marien pins the façade by commit.
+
+Record: [ADR 0023](../docs/adr/0023-leanelpi-host-facade.md).
+
+- status:: accepted
+- motivated_by:: [[decisions#Logic in Lean behind a thin C++ shim]] {weight: primary}
+- motivated_by:: [[decisions#LeanElpi is the engine]]
+- motivated_by:: [[constraints#Out of fuel discards the search]]

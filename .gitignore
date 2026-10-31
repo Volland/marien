@@ -1,5 +1,6 @@
-.omc/
-.DS_Store
 .deps/
+.DS_Store
+.omc/
+/.lake/
 spike/.lake/
 spike/build/

@@ -1,0 +1,16 @@
+{"version": "1.3.0",
+ "packagesDir": ".lake/packages",
+ "packages":
+ [{"url": "https://github.com/Volland/lean-elpi",
+   "type": "git",
+   "subDir": null,
+   "scope": "",
+   "rev": "d289f58a255dd22ca6c83fa6bcfa3c141de8e477",
+   "name": "«lean-elpi»",
+   "manifestFile": "lake-manifest.json",
+   "inputRev": "d289f58a255dd22ca6c83fa6bcfa3c141de8e477",
+   "inherited": false,
+   "configFile": "lakefile.lean"}],
+ "name": "marien",
+ "lakeDir": ".lake",
+ "fixedToolchain": false}

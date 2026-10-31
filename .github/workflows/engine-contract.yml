@@ -1,0 +1,20 @@
+# Engine contract (openspec capability `engine-host-api`): check every scenario against the
+# LeanElpi revision pinned in lakefile.lean.
+name: engine-contract
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lean (elan)
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Contract tests
+        run: lake test

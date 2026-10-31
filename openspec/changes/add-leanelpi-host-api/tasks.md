@@ -19,18 +19,18 @@
 
 ## 3. Marien side
 
-- [ ] 3.1 Pin `lean-elpi` at `v0.4.0` in `lakefile.lean`
-- [ ] 3.2 Write `tests/EngineContract.lean`, one test per scenario below, run in CI against the pinned release
+- [ ] 3.1 Pin `lean-elpi` at `v0.4.0` in `lakefile.lean` (pinned by commit `d289f58` of branch `add-host-api` until the release)
+- [x] 3.2 Write `tests/EngineContract.lean`, one test per scenario below, run in CI against the pinned release
 
 ## 4. Traceability
 
-- [ ] 4.1 Annotate Marien's import wrapper in `Marien/Engine.lean` with `@tg: implements:: [[openspec:engine-host-api#Predicate signature lookup]] {note: "realized in lean-elpi Elpi.Host"}`, and add `verifies` above the tests for `#Declared predicate`, `#Polymorphic predicate` and `#Unknown predicate`
-- [ ] 4.2 Annotate `implements:: [[openspec:engine-host-api#Goals built from terms]]`, and add `verifies` for `#Input values are not parsed as source` and `#Ill-typed argument`
-- [ ] 4.3 Annotate `implements:: [[openspec:engine-host-api#Structured solution terms]]`, and add `verifies` for `#Constructor application`, `#Unbound output` and `#JSON form round-trips` (the last cites the theorem)
-- [ ] 4.4 Annotate `implements:: [[openspec:engine-host-api#Resumable fuel slices]]`, and add `verifies` for `#Slices equal one run` and `#Pausing does not copy the store`
-- [ ] 4.5 Annotate `implements:: [[openspec:engine-host-api#Public clause AST]]`, and add `verifies` for `#Negation and cut are visible` and `#Hypothetical clause is visible`
-- [ ] 4.5a Annotate `implements:: [[openspec:engine-host-api#Bulk fact loading]]`, and add `verifies` for `#Facts from terms answer queries`, `#Loading is linear` and `#Ill-typed fact is rejected`
-- [ ] 4.6 Annotate `implements:: [[openspec:engine-host-api#Multi-unit load keeps positions]]`, and add `verifies` for `#Error position inside the module`
-- [ ] 4.7 Record in lat.md: once 0.4 ships, mark [[constraints#Out of fuel discards the search]] as resolved and note the release; add a Decision section for the host façade, `motivated_by:: [[decisions#Logic in Lean behind a thin C++ shim]]`
+- [x] 4.1 Annotate Marien's import wrapper in `Marien/Engine.lean` with `@tg: implements:: [[openspec:engine-host-api#Predicate signature lookup]] {note: "realized in lean-elpi Elpi.Host"}`, and add `verifies` above the tests for `#Declared predicate`, `#Polymorphic predicate` and `#Unknown predicate`
+- [x] 4.2 Annotate `implements:: [[openspec:engine-host-api#Goals built from terms]]`, and add `verifies` for `#Input values are not parsed as source` and `#Ill-typed argument`
+- [x] 4.3 Annotate `implements:: [[openspec:engine-host-api#Structured solution terms]]`, and add `verifies` for `#Constructor application`, `#Unbound output` and `#JSON form round-trips` (the last cites the theorem)
+- [x] 4.4 Annotate `implements:: [[openspec:engine-host-api#Resumable fuel slices]]`, and add `verifies` for `#Slices equal one run` and `#Pausing does not copy the store`
+- [x] 4.5 Annotate `implements:: [[openspec:engine-host-api#Public clause AST]]`, and add `verifies` for `#Negation and cut are visible` and `#Hypothetical clause is visible`
+- [x] 4.5a Annotate `implements:: [[openspec:engine-host-api#Bulk fact loading]]`, and add `verifies` for `#Facts from terms answer queries`, `#Loading is linear` and `#Ill-typed fact is rejected`
+- [x] 4.6 Annotate `implements:: [[openspec:engine-host-api#Multi-unit load keeps positions]]`, and add `verifies` for `#Error position inside the module`
+- [ ] 4.7 Record in lat.md: once 0.4 ships, mark [[constraints#Out of fuel discards the search]] as resolved and note the release; add a Decision section for the host façade, `motivated_by:: [[decisions#Logic in Lean behind a thin C++ shim]]` (the host-façade decision is recorded with ADR 0023; marking the constraint resolved waits for the release)
 - [x] 4.8 Update the [[components#Runtime bridge]] section and add `engine-host-api` to the `openspec:` frontmatter of `tg.md/architecture/components.md`
-- [ ] 4.9 Run `tg check`, `tg ontology check` and `tg trace engine-host-api --gaps`, and close every gap they report
+- [x] 4.9 Run `tg check`, `tg ontology check` and `tg trace engine-host-api --gaps`, and close every gap they report

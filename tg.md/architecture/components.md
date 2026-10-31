@@ -35,6 +35,16 @@ Follows LeanElpi's `ensure_thread` pattern: a thread-local flag calls `lean_init
 - motivated_by:: [[decisions#Runtime-only Lean initialization]]
 - introduced_by:: [[changes#spike-lean-runtime-in-ladybug]]
 
+## Engine contract
+
+The one module through which Marien calls LeanElpi: it wraps LeanElpi's `Elpi.Host` façade. Source: `Marien/Engine.lean`; contract tests: `tests/EngineContract.lean` (`lake test`).
+
+- module:: Marien.Engine
+- milestone:: M0
+- motivated_by:: [[decisions#Call LeanElpi only through its host façade]]
+- motivated_by:: [[decisions#LeanElpi is the engine]]
+- introduced_by:: [[changes#add-leanelpi-host-api]]
+
 ## Catalog reader
 
 Reads LadybugDB's catalog (node tables, rel tables, FROM/TO pairs, property types) into the schema JSON the Lean side consumes. Source: `shim/catalog.cpp`.
