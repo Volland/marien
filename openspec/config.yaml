@@ -1,0 +1,74 @@
+schema: spec-driven
+
+# Project context, shown to AI when creating artifacts.
+context: |
+  Project: Marien, a LadybugDB extension written in Lean 4 that stores lambda-Prolog (ELPI
+  dialect) programs in the database and runs them with LeanElpi
+  (https://github.com/Volland/lean-elpi) to reason about and validate the graph.
+
+  Goals (in priority order):
+    1. Never give wrong answers: every guarantee about results (closed-world scope,
+       partitioning, staging, fuel) is enforced by a static check or a proof, never left to
+       the user. Exhausted fuel, time or fact budgets are errors, never truncated results.
+    2. Types from the schema: the LadybugDB catalog becomes a generated ELPI signature (one
+       kind per node table, one predicate per property, reified edges, primary-key node
+       terms); rules are typechecked against it when saved and when the schema changes.
+    3. Higher-order rules: relations are predicates, `graph.std` combinators take them as
+       arguments, and staged meta-rules quantify over a reflected schema and its annotations.
+    4. Validation at scale: a uniform `violation` protocol and `elpi_validate`, partitioned
+       for tables of 1M to 100M facts.
+    5. Rules live in the database (`_elpi_module`), travel with it, and are queryable by Cypher.
+
+  Non-goals: writing inferred facts back to the graph (read-only runs; materialization is a
+  later design); runtime clause generation that escapes the static checks; a Lean
+  `Environment` inside the database; upstream OCaml ELPI; a stable ABI across LadybugDB
+  versions.
+
+  Architecture: a thin C++ shim implements LadybugDB's table-function interfaces (bind,
+  execute, rewriteFunc) and reads the catalog and tables in the calling transaction; all
+  logic (encoding, staging, analysis, execution, decoding, handle cache) is Lean in the
+  `Marien` package, linked statically with LeanElpi into one shared library with exactly one
+  Lean runtime. Facts are materialized per call; runs are pure functions of (rules, scope,
+  parameters, schema hash).
+
+  Tech stack: Lean 4.35.0 + Lake, LeanElpi >= 0.4 (Lake dependency), C++20 + CMake for the
+  shim, LadybugDB pinned per release (no stable extension ABI). Apache-2.0.
+
+  Milestones = OpenSpec changes, in order: spike-lean-runtime-in-ladybug (Spike),
+  add-leanelpi-host-api (M0, lands in lean-elpi), add-tracer-bullet (M1),
+  add-typed-validation (M2), add-analysis-and-partitioning (M3), add-higher-order-layer
+  (M4), add-ecosystem (M5).
+
+  Knowledge graph: tg.md/ read with the `tg` CLI. Intent types: Decision
+  (tg.md/decisions.md; long form as MADR records in docs/adr/, cited as [[adr:NNNN]]),
+  Constraint (tg.md/constraints.md), Concept (tg.md/overview.md), Component
+  (tg.md/architecture/components.md), Change (tg.md/changes.md). Architecture and Mermaid
+  diagrams live in tg.md/architecture/. Requirements and Scenarios live here in OpenSpec and
+  are cited as [[openspec:<capability>#<Requirement>]]; their names are a contract.
+
+  Conventions: Lean comments use `--`; the tg `implements` annotation goes on the line above
+  the implementing declaration, the `verifies` annotation above the test or theorem. C++
+  uses `//`. Tests: Lean golden tests and `plausible` property tests under tests/, end-to-end
+  tests against an embedded LadybugDB under tests/e2e/.
+
+rules:
+  proposal:
+    - "tg: Run `tg ontology` and use its type and edge names throughout. Under Impact, list the lat.md sections this change touches (find them with `tg search`), the decisions and constraints that bind the area (`tg cypher` over `motivated_by`, `constrains` and `contradicts` edges), and the requirements it adds or modifies as `[[openspec:<capability>#<Requirement>]]`."
+    - "State the milestone (Spike, M0 to M5) and which earlier changes this one depends on. Name the ADRs (`[[adr:NNNN]]`) and Components (`[[components#<Name>]]`) the change realizes or introduces."
+  specs:
+    - "tg: Give every requirement a stable, unique name: code, tests and docs cite it as `[[openspec:<capability>#<Requirement>]]`, and a renamed requirement breaks those links."
+    - "tg: Give every scenario a unique name within its requirement; tests cite it as `[[openspec:<capability>#<Requirement>#<Scenario>]]`."
+    - "Requirements describe observable behaviour of the extension (Cypher calls, returned rows, errors, stored rows) or of the Lean API. Embed a Mermaid diagram when a protocol, state machine or data flow is clearer drawn than written."
+    - "Lean proofs: when a requirement states a total property over finite or inductive data (round-trips, injectivity, exclusion, determinism, coverage), say that it is proved and add a scenario naming the theorem that establishes it."
+  design:
+    - "tg: Write each decision so it can become a lat.md `Decision` section: the choice, the alternatives rejected, and its reasons as named relations from `tg ontology` (`motivated_by` a constraint or concept, `supersedes` an earlier decision), linking the sections with `[[section]]` references. Cite the matching ADR, or propose a new numbered ADR in docs/adr/."
+    - "tg: Name the external rules the design must respect as constraints, with what each binds, so they can become `Constraint` sections with `constrains` edges."
+    - "Include at least one Mermaid diagram (component, sequence, state, class or flowchart) for the parts this change introduces, consistent with tg.md/architecture/."
+    - "Lean proofs where practical: list every key property of the change and say whether it is proved in Lean (with the theorem name and file) or tested (with the reason a proof is impractical). Prefer a proof when the property is a total statement over inductive data and the proof is small; prefer property tests for properties over the engine's operational behaviour."
+  tasks:
+    - "tg: For each requirement, include a task to annotate the code that implements it with a comment `@tg: implements:: [[openspec:<capability>#<Requirement>]]` on the line above the function, class or file, with properties such as `{confidence: partial}` when they apply."
+    - "tg: For each scenario, include a task to annotate the test that proves it with a comment `@tg: verifies:: [[openspec:<capability>#<Requirement>#<Scenario>]]` directly above the test call or theorem."
+    - "Include one task per Lean theorem the design commits to, naming the theorem and file; a theorem marked optional in the design is an optional task."
+    - "tg: Include a task to record the design's decisions and constraints in lat.md as typed sections (`type: Decision`, `type: Constraint`) with typed edge lines such as `- motivated_by:: [[constraints#<Constraint>]]` and `- constrains:: [[openspec:<capability>#<Requirement>]] {strength: must}`, using only edge names `tg ontology` lists, and to add or update the ADR in docs/adr/."
+    - "tg: Include a task to update the lat.md section that explains each capability and list the capability in that file's `openspec:` frontmatter; update tg.md/architecture/ diagrams when components change."
+    - "tg: End with a task to run `tg check`, `tg ontology check` and `tg trace <capability> --gaps` and close every gap they report."
