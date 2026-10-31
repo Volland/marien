@@ -1,2 +1,3 @@
 # platform  gzip-9 bytes of the stripped extension (update when growth is intended)
-osx-arm64 871701
+# osx-arm64: build/libmarien.lbug_extension of the tracer bullet (M1); the spike was 871701
+osx-arm64 1095112

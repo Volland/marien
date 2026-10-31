@@ -71,7 +71,7 @@ An `accumulate m.` directive SHALL refer to a stored module named `m`. Saving SH
 - **THEN** the import fails and none of the three is stored
 
 ### Requirement: Compiled handle cache
-Compiled programs SHALL be kept in an in-memory cache keyed by module name, module version and schema hash, and SHALL NOT be written to the database. A run whose key is cached SHALL reuse the compiled program without parsing or type checking. The cache SHALL be bounded by the extension option `elpi_cache_size` (number of entries) with least-recently-used eviction.
+Compiled programs SHALL be kept in an in-memory cache keyed by module name, module version, a hash of the module's source, schema hash and the sources of the modules it accumulates, and SHALL NOT be written to the database. The cache is shared by every database the process opens, so two databases with a module of the same name and version SHALL NOT share an entry unless the sources are equal. A run whose key is cached SHALL reuse the compiled program without parsing or type checking. The cache SHALL be bounded by the extension option `elpi_cache_size` (number of entries) with least-recently-used eviction.
 
 #### Scenario: Second run reuses the program
 - **WHEN** the same module is queried twice with an unchanged schema

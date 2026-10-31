@@ -9,7 +9,9 @@
 - [x] 1.7 Public `Ast.Program` view: declarations, modes, accumulates, clauses with positions, typed body goals
 - [x] 1.8 `loadUnits` with per-unit positions
 - [x] 1.8a `addFacts` bulk loading of ground facts as terms, with signature checks and in-place index append
-- [ ] 1.9 Release LeanElpi 0.4.0 and update its changelog (changelog entry written under Unreleased; the release waits on lean-elpi's `add-host-callbacks`, which also targets 0.4.0)
+- [ ] 1.9 Release LeanElpi 0.4.0 and update its changelog (`v0.4.0` was never published; 0.4.1 published `add-host-api` on 2026-10-31; task 1.10 ships in 0.4.2)
+
+- [x] 1.10 Host libraries for `accumulate`, goals parsed from text and `reservedNames`, found while building M1 (requirements "Stored modules resolve accumulate" and "Goals parsed from text for debugging"; contract checks in `tests/EngineContract.lean`); not in the `v0.4.0` tag
 
 ## 2. Proofs (in lean-elpi)
 
@@ -19,7 +21,7 @@
 
 ## 3. Marien side
 
-- [ ] 3.1 Pin `lean-elpi` at `v0.4.0` in `lakefile.lean` (pinned by commit `d289f58` of branch `add-host-api` until the release)
+- [ ] 3.1 Pin `lean-elpi` at `v0.4.0` in `lakefile.lean` (pinned by commit `91ea5ba`, lean-elpi PR #2 with task 1.10, released as 0.4.2 once merged; 0.4.1 is published but lacks 1.10)
 - [x] 3.2 Write `tests/EngineContract.lean`, one test per scenario below, run in CI against the pinned release
 
 ## 4. Traceability

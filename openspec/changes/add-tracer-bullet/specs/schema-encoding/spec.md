@@ -46,7 +46,7 @@ For each rel table `R` with a single FROM/TO pair `(A, B)`, the signature SHALL 
 - **THEN** materialization emits two `knows` facts with different edge terms
 
 ### Requirement: Property type mapping
-The generator SHALL map LadybugDB types as follows: all signed and unsigned integer types and SERIAL to `int`; FLOAT and DOUBLE to `float`; STRING to `string`; BOOL to `bool`; DATE to `int` days since 1970-01-01; TIMESTAMP to `int` microseconds since 1970-01-01 UTC; LIST of a supported type `x` to `list x`; STRUCT to a generated record kind `t.p.rec` with one constructor whose arguments follow the struct's field order. Properties of any other type SHALL be left out of the signature with a warning that names the table, property and type. Integer values outside the range the engine's `int` supports SHALL make materialization fail, never wrap.
+The generator SHALL map LadybugDB types as follows: all signed and unsigned integer types (INT8 to INT128, UINT8 to UINT128) and SERIAL to `int`; FLOAT and DOUBLE to `float`; STRING to `string`; BOOL to `bool`; DATE to `int` days since 1970-01-01; TIMESTAMP to `int` microseconds since 1970-01-01 UTC; LIST of a supported type `x` to `list x`; STRUCT to a generated record kind `t.p.rec` with one constructor whose arguments follow the struct's field order. Properties of any other type SHALL be left out of the signature with a warning that names the table, property and type. The engine's `int` is an unbounded integer, so every integer value, including UINT64 and INT128 values, SHALL keep its exact value; no integer SHALL ever wrap.
 
 #### Scenario: Temporal values as epoch integers
 - **WHEN** a Person has `born DATE` equal to `1970-01-11`
@@ -57,16 +57,17 @@ The generator SHALL map LadybugDB types as follows: all signed and unsigned inte
 - **THEN** the signature has no predicate for it
 - **AND** `elpi_signature()` and `elpi_save` report a warning naming the table, `tags` and `MAP(STRING, INT64)`
 
-#### Scenario: Out-of-range integer fails
-- **WHEN** a UINT64 property holds a value larger than the engine's maximum `int`
-- **THEN** materialization fails with an error naming the table, property and value
+#### Scenario: Large integers keep their value
+- **WHEN** a UINT64 property holds 18446744073709551615
+- **THEN** the fact holds the `int` 18446744073709551615
 
 ### Requirement: System tables are invisible to rules
-Tables whose names start with `_elpi_` SHALL never appear in the schema model passed to the signature generator. A module that names one of their generated identifiers SHALL fail to type-check.
+Tables whose names start with `_elpi_` SHALL never appear in the schema model passed to the signature generator, so no identifier is generated for them and no run loads facts from them. Their names start with `_`, which ELPI reads as a variable, so a module cannot even write them as constants.
 
 #### Scenario: Module cannot read its own storage
 - **WHEN** a module mentions `_elpi_module.source`
-- **THEN** `elpi_save` fails with a type error for an undeclared constant
+- **THEN** the signature declares nothing for `_elpi_module`
+- **AND** a run of the module scans no `_elpi_*` table
 
 ### Requirement: Canonical schema hash
 The extension SHALL compute a schema hash from a canonical form of the schema model, with tables, properties and FROM/TO pairs sorted by name and `_elpi_*` tables removed. Two catalogs that describe the same schema in a different order SHALL get the same hash. Any change to a table name, property name, property type, key or FROM/TO pair SHALL change the canonical form.

@@ -120,7 +120,7 @@ erDiagram
 - **`elpi_init()` creates the tables explicitly.** An extension that runs DDL during `LOAD` surprises users and may not be possible in a read-only connection. Rejected: creating tables lazily on the first save.
 - **Writes are one rewritten statement.** `elpi_save`, `elpi_drop` and `elpi_import` do all checking in bind and return a single Cypher statement through `rewriteFunc` ([[constraints#Table functions can rewrite into Cypher]]), so a save is atomic with the caller's transaction. If `rewriteFunc` cannot return several clauses in one statement (MERGE plus edge replacement), the first task finds out and the design falls back to one `UNWIND`-driven statement.
 - **Source is escaped, not encoded.** Base64 would make `source` unreadable to Cypher users. Escaping keeps it readable and is proved correct (below).
-- **One cache key, three parts.** `(name, version, schemaHash)`. In M1 the hash covers the whole schema. M2 narrows it to the tables a module reaches ([[decisions#Lazy recheck by schema hash]]).
+- **One cache key, five parts.** `(name, version, source hash, schemaHash, source hashes of accumulated modules)`. The cache is per process and shared by every database it opens, and versions restart after a drop, so a version alone would serve one database's program to another; without the dependency hashes a changed dependency would be served from a stale entry. In M1 the hash covers the whole schema. M2 narrows it to the tables a module reaches ([[decisions#Lazy recheck by schema hash]]).
 
 ## Proofs and tests
 
@@ -141,4 +141,4 @@ Following [[decisions#Proofs where practical]]:
 
 - **Storage API access from a table function:** reading tables directly ties the scanner to LadybugDB internals that change between versions. Mitigation: pin the version ([[decisions#Out-of-tree extension with its own repository]]) and isolate the scanner behind one C++ interface.
 - **Coarse materialization:** loading every table a module calls anywhere can be far more than one entry point needs. M3 replaces it with reachability per entry point. Until then, `elpi_max_facts` keeps it safe.
-- **Integer range:** LadybugDB has UINT64 and INT128. Values outside the engine's `int` fail loudly rather than wrap. INT128 is not mapped.
+- **Integer range:** LeanElpi's `int` is an unbounded `Int`, so UINT64, INT128 and UINT128 values keep their exact value; no range check is needed.

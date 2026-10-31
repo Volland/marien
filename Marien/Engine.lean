@@ -26,15 +26,29 @@ bind time. -/
 def predSig? (p : Program) (name : String) : Option PredSig := Elpi.Host.predSig? p name
 
 /-- Compile the generated signature and a module's source as one program, with errors located in
-the unit they come from. -/
+the unit they come from. `accumulate` resolves against `libs`, the stored modules by name. -/
 -- @tg: implements:: [[openspec:engine-host-api#Multi-unit load keeps positions]] {note: "realized in lean-elpi Elpi.Host"}
-def compile (units : List (String × String)) : Except Error Program := Elpi.Host.loadUnits units
+-- @tg: implements:: [[openspec:engine-host-api#Stored modules resolve accumulate]] {note: "realized in lean-elpi Elpi.Host"}
+def compile (units : List (String × String)) (libs : List (String × String) := []) :
+    Except Error Program :=
+  Elpi.Host.loadUnits units libs
+
+/-- The modules a source accumulates, by name, without loading them. -/
+def accumulates (name src : String) : Except Error (List String) := Elpi.Host.accumulates name src
+
+/-- Identifiers the signature generator must not produce: keywords and library names. -/
+def reservedNames : Std.HashSet String := Elpi.Host.reservedNames
 
 /-- A goal built from parameter values and output variables, never from text. -/
 -- @tg: implements:: [[openspec:engine-host-api#Goals built from terms]] {note: "realized in lean-elpi Elpi.Host"}
 def goal (p : Program) (pred : String) (args : Array GoalArg) (fuel : Nat := defaultFuel) :
     Except Error Query :=
   Elpi.Host.buildGoal p pred args fuel
+
+/-- A goal typed by a user, for the untyped debug query; errors are located in `<goal>`. -/
+-- @tg: implements:: [[openspec:engine-host-api#Goals parsed from text for debugging]] {note: "realized in lean-elpi Elpi.Host"}
+def parseGoal (p : Program) (text : String) (fuel : Nat := defaultFuel) : Except Error Query :=
+  Elpi.Host.parseGoal p text fuel
 
 /-- Run at most `n` steps; the executor checks interrupts and deadlines between slices. -/
 -- @tg: implements:: [[openspec:engine-host-api#Resumable fuel slices]] {note: "realized in lean-elpi Elpi.Host"}
@@ -53,6 +67,8 @@ def addFacts (p : Program) (pred : String) (rows : Array (Array ResultTerm)) : E
 
 /-- The clauses of a module, for rule analysis and staging. -/
 -- @tg: implements:: [[openspec:engine-host-api#Public clause AST]] {note: "realized in lean-elpi Elpi.Host"}
-def clauses (units : List (String × String)) : Except Error Elpi.Host.Ast.Program := Elpi.Host.ast units
+def clauses (units : List (String × String)) (libs : List (String × String) := [])
+    (view : String → Bool := fun _ => true) : Except Error Elpi.Host.Ast.Program :=
+  Elpi.Host.ast units libs view
 
 end Marien.Engine

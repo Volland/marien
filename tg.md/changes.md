@@ -19,13 +19,15 @@ Archived to `openspec/changes/archive/2026-10-31-spike-lean-runtime-in-ladybug/`
 
 M0: the LeanElpi 0.4 API Marien needs: entry-point signatures, structured result terms, resumable fuel and a public clause AST. Implemented in the lean-elpi repository.
 
-The engine side is done as lean-elpi change `add-host-api` (module `Elpi.Host`, branch `add-host-api`, with its three proofs), not yet released. Marien pins it by commit; `Marien/Engine.lean` wraps it and `tests/EngineContract.lean` passes all 16 scenarios. Open: the 0.4.0 release and the pin to its tag.
+The engine side is lean-elpi change `add-host-api` (module `Elpi.Host`, with its three proofs), published in LeanElpi 0.4.1. Building M1 added host libraries for `accumulate`, goals parsed from text and the reserved names to the façade (two new requirements here, 20 contract checks), in lean-elpi PR #2 for 0.4.2. Marien pins that PR's commit `91ea5ba`. Open: merging it, the 0.4.2 release and the pin to its tag.
 
 - status:: proposed
 
 ## add-tracer-bullet
 
 M1: the whole stack end to end: shim, single runtime, catalog to signature, `elpi_save`, untyped `elpi_query`, full-scope materialization and fuel slicing.
+
+Implemented: the Lean layers with their five proofs (54 Lean tests), the C++ shim and bridge (`shim/`), and 33 integration tests against LadybugDB 0.22.1. Open: the Linux CI leg and the pin to LeanElpi 0.4.2.
 
 - status:: proposed
 

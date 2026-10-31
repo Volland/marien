@@ -85,3 +85,25 @@ LeanElpi SHALL compile a program from an ordered list of named source units, suc
 #### Scenario: Error position inside the module
 - **WHEN** the units `signature` (200 lines) and `org-rules` are compiled and `org-rules` has a type error on line 3, column 10
 - **THEN** the error reports unit `org-rules`, line 3, column 10
+
+### Requirement: Stored modules resolve accumulate
+LeanElpi SHALL let the host pass named library sources, the modules Marien stores, along with the units it compiles. An `accumulate m.` directive SHALL resolve against these first and against LeanElpi's embedded libraries second, and a missing name SHALL fail with an error located at the directive that names it. LeanElpi SHALL also list the names a source accumulates without loading them, and the clause AST SHALL let the host choose which units it shows, so the generated signature can be left out.
+
+#### Scenario: Module accumulates a stored module
+- **WHEN** `org-rules` says `accumulate graph-base.` and `graph-base` is passed as a library declaring `pred edge o:int.`
+- **THEN** `org-rules` compiles and may call `edge`
+
+#### Scenario: Missing stored module is named
+- **WHEN** `org-rules` accumulates `graph-base` and no library has that name
+- **THEN** compilation fails at the directive with a message naming `graph-base`
+
+### Requirement: Goals parsed from text for debugging
+LeanElpi SHALL parse a goal written as text against a compiled program, for Marien's untyped `elpi_query`. The goal's named variables SHALL be the outputs, and parse and type errors SHALL be located in unit `<goal>` with the column inside the goal text. Typed entry points SHALL keep building goals from terms.
+
+#### Scenario: Text goal binds its variables
+- **WHEN** `edge X, X > 1` is parsed against facts `edge 1.` and `edge 2.` and solved
+- **THEN** there is one solution binding `X` to `2`
+
+#### Scenario: Syntax error column
+- **WHEN** the goal text `edge X,, ok` is parsed
+- **THEN** it fails in unit `<goal>` at line 1, column 7

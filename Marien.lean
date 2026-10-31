@@ -1,4 +1,6 @@
 import Marien.Engine
+import Marien.Schema
+import Marien.Ffi
 
 /-!
 # Marien

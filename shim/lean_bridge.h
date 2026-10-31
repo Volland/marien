@@ -1,0 +1,111 @@
+/* C interface between Marien's C++ shim and its Lean code (Marien/Ffi.lean).
+ *
+ * Only marien_bridge_* symbols cross from the Lean side of the library to the C++ side; on
+ * Linux every other symbol of the Lean runtime is localized by scripts/link-extension.sh. The
+ * C++ side never sees a Lean object: it gets opaque handles, sized strings and string lists.
+ *
+ * Ownership: functions that take a handle by pointer-to-handle (`marien_session **`) consume it
+ * and store its successor; `marien_bridge_free_*` releases a handle. Every string list returned
+ * must be released with marien_bridge_free_strings. Each call initializes the calling thread for
+ * Lean if it is new. */
+#ifndef MARIEN_LEAN_BRIDGE_H
+#define MARIEN_LEAN_BRIDGE_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct marien_session marien_session;
+typedef struct marien_run marien_run;
+typedef struct marien_values marien_values;
+
+/* A UTF-8 string with its length in bytes (it may contain NUL). */
+typedef struct {
+    char *data;
+    size_t len;
+} marien_str;
+
+/* A list of strings, or an error. */
+typedef struct {
+    marien_str error; /* data == NULL on success */
+    size_t n;
+    marien_str *items;
+} marien_strings;
+
+void marien_bridge_free_strings(marien_strings *s);
+
+/* Start the Lean runtime and Marien's Lean modules once per process. NULL on success,
+ * otherwise the error text (owned by the bridge). */
+const char *marien_bridge_init(void);
+
+/* How many times the runtime initializer actually ran (expected: 1). */
+int marien_bridge_init_runs(void);
+
+/* elpi_signature: flattened rows (kind, name, text); table "" for all tables. */
+marien_strings marien_bridge_signature(const char *catalog, const char *table);
+
+/* Statements for the rewrite of elpi_init, elpi_save, elpi_drop and elpi_import, and the rows of
+ * elpi_export (name, version, source) flattened. `modules` is the JSON array of stored modules
+ * {name, version, source, derived}. Arguments are NUL-terminated except where a length is given. */
+marien_strings marien_bridge_init_statements(void);
+marien_strings marien_bridge_save(const char *catalog, const char *modules, const char *name,
+                                  const char *source, size_t source_len);
+marien_strings marien_bridge_drop(const char *modules, const char *name);
+marien_strings marien_bridge_export(const char *modules);
+marien_strings marien_bridge_import(const char *catalog, const char *modules, const char *bundle,
+                                    size_t bundle_len);
+
+/* --- Queries -------------------------------------------------------------------------- */
+
+/* Find or compile the module and open a session for `goal`; NULL and *error (free it) on failure. */
+marien_session *marien_bridge_prepare(const char *catalog, const char *modules, const char *name,
+                                      const char *goal, uint64_t max_facts, uint64_t cache_size,
+                                      marien_str *error);
+
+/* The tables to scan: scan i is ("node" | "rel", table, column...). */
+size_t marien_bridge_scan_count(marien_session *s);
+marien_strings marien_bridge_scan(marien_session *s, size_t i);
+
+/* Column builders. A finished column is handed to marien_bridge_add_batch, a nested one to
+ * marien_bridge_push_list / _struct, which consume it. */
+marien_values *marien_bridge_values_new(size_t capacity);
+void marien_bridge_push_int64(marien_values *v, int64_t x);
+void marien_bridge_push_uint64(marien_values *v, uint64_t x);
+void marien_bridge_push_int128(marien_values *v, uint64_t hi, uint64_t lo);
+void marien_bridge_push_uint128(marien_values *v, uint64_t hi, uint64_t lo);
+void marien_bridge_push_double(marien_values *v, double x);
+void marien_bridge_push_bool(marien_values *v, int b);
+void marien_bridge_push_str(marien_values *v, const char *data, size_t len);
+void marien_bridge_push_null(marien_values *v);
+void marien_bridge_push_list(marien_values *v, marien_values *items);
+void marien_bridge_push_struct(marien_values *v, marien_values *fields);
+void marien_bridge_free_values(marien_values *v);
+
+/* Add one batch of `ncols` columns (consumed) to scan `scan`; on failure returns the error
+ * (free its data) and leaves *s valid. */
+marien_str marien_bridge_add_batch(marien_session **s, size_t scan, marien_values **cols, size_t ncols);
+
+/* Parse the goal; consumes the session. NULL and *error on failure. */
+marien_run *marien_bridge_start(marien_session *s, const char *goal, uint64_t fuel,
+                                uint64_t slice_steps, uint64_t max_solutions, marien_str *error);
+
+enum { MARIEN_STEP_SOLUTION = 0, MARIEN_STEP_PAUSED = 1, MARIEN_STEP_EXHAUSTED = 2,
+       MARIEN_STEP_STOPPED = 3, MARIEN_STEP_ERROR = 4 };
+
+/* Run one slice. SOLUTION fills *bindings (var, json, ...), ERROR fills *error; after EXHAUSTED,
+ * STOPPED or ERROR, *r is NULL. */
+int marien_bridge_step(marien_run **r, marien_strings *bindings, marien_str *error);
+
+void marien_bridge_free_session(marien_session *s);
+void marien_bridge_free_run(marien_run *r);
+
+/* How often the handle cache missed (tests). */
+uint64_t marien_bridge_cache_misses(void);
+
+#ifdef __cplusplus
+}
+#endif
+#endif

@@ -218,11 +218,51 @@ def errorPosition : IO Unit := do
   | .error e => fail s!"expected a located error, got {e}"
   | .ok _ => fail "the module must be rejected"
 
-end EngineContract
+/-! ### Stored modules resolve accumulate -/
 
-open EngineContract in
-def main : IO UInt32 := do
-  let tests : List (String × IO Unit) :=
+def graphBase : String := "pred edge o:int.\nedge 1.\nedge 2.\n"
+
+-- @tg: verifies:: [[openspec:engine-host-api#Stored modules resolve accumulate#Module accumulates a stored module]] {level: integration}
+def moduleAccumulates : IO Unit := do
+  let rules := "accumulate graph-base.\npred two o:int.\ntwo N :- edge N, N > 1.\n"
+  match compile [("org-rules", rules)] [("graph-base", graphBase)] with
+  | .error e => fail s!"the stored module must resolve: {e}"
+  | .ok p =>
+    let sols ← solutions p "two" #[.out "N"]
+    check (sols.size == 1) "org-rules calls edge"
+  match accumulates "org-rules" rules with
+  | .ok names => check (names == ["graph-base"]) s!"accumulated names {names}"
+  | .error e => fail s!"{e}"
+
+-- @tg: verifies:: [[openspec:engine-host-api#Stored modules resolve accumulate#Missing stored module is named]] {level: integration}
+def missingStoredModule : IO Unit := do
+  match compile [("org-rules", "accumulate graph-base.\n")] with
+  | .error (.located (d :: _)) =>
+    check (d.unit == "org-rules" && d.line == 1) s!"located at {d.unit}:{d.line}"
+    check ((d.msg.splitOn "graph-base").length > 1) s!"names the module: {d.msg}"
+  | _ => fail "a missing module must fail"
+
+/-! ### Goals parsed from text for debugging -/
+
+-- @tg: verifies:: [[openspec:engine-host-api#Goals parsed from text for debugging#Text goal binds its variables]] {level: integration}
+def textGoal : IO Unit := do
+  let p ← load graphBase
+  match parseGoal p "edge X, X > 1" with
+  | .error e => fail s!"{e}"
+  | .ok q =>
+    let (sols, ending) := runAll q 1000
+    check (ending == "exhausted") ending
+    check (sols.map (·.map fun (n, t) => s!"{n}={t}") == #[#["X=2"]]) s!"solutions {sols.size}"
+
+-- @tg: verifies:: [[openspec:engine-host-api#Goals parsed from text for debugging#Syntax error column]] {level: integration}
+def textGoalSyntaxError : IO Unit := do
+  let p ← load graphBase
+  match parseGoal p "edge X,, ok" with
+  | .error (.located (d :: _)) => check (d.unit == "<goal>" && d.line == 1 && d.col == 7) s!"{d.unit}:{d.line}:{d.col}"
+  | _ => fail "the goal must be rejected"
+
+/-- Every contract check, by name. -/
+def all : List (String × IO Unit) :=
     [("declared predicate", declaredPredicate), ("polymorphic predicate", polymorphicPredicate),
      ("unknown predicate", unknownPredicate), ("input values are not parsed", notParsed),
      ("ill-typed argument", illTypedArgument), ("constructor application", constructorApplication),
@@ -230,14 +270,9 @@ def main : IO UInt32 := do
      ("slices equal one run", slicesEqualOneRun), ("pausing does not copy", pausingDoesNotCopy),
      ("negation and cut", negationAndCut), ("hypothetical clause", hypotheticalClause),
      ("facts answer queries", factsAnswerQueries), ("loading is linear", loadingIsLinear),
-     ("ill-typed fact", illTypedFact), ("error position", errorPosition)]
-  let mut failed := 0
-  for (name, t) in tests do
-    try
-      t
-      IO.println s!"PASS {name}"
-    catch e =>
-      failed := failed + 1
-      IO.println s!"FAIL {name}: {e}"
-  IO.println s!"{tests.length - failed}/{tests.length} passed"
-  return if failed == 0 then 0 else 1
+     ("ill-typed fact", illTypedFact), ("error position", errorPosition),
+     ("module accumulates a stored module", moduleAccumulates),
+     ("missing stored module", missingStoredModule), ("text goal", textGoal),
+     ("text goal syntax error", textGoalSyntaxError)]
+
+end EngineContract

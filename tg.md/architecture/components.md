@@ -12,7 +12,9 @@ How they fit together is in [[architecture#Layers]]; flows are drawn in [[uml]].
 
 Registers Marien's table functions with LadybugDB and implements their bind, execute and rewriteFunc callbacks; owns no logic beyond marshalling. Source: `shim/extension.cpp`.
 
-Exports only the loader entry points `init` and `name`; everything else is hidden so the bundled Lean runtime, GMP and libuv cannot clash with symbols of LadybugDB or other extensions. Compiled with the platform's system C++ compiler against the pinned LadybugDB headers plus the CMake-generated ones, and linked by `scripts/link-extension.sh`. Prototype: `spike/shim.cpp`.
+Exports only the loader entry points `init` and `name`; everything else is hidden so the bundled Lean runtime, GMP and libuv cannot clash with symbols of LadybugDB or other extensions. Compiled with the platform's system C++ compiler against the pinned LadybugDB headers plus the CMake-generated ones (`shim/CMakeLists.txt`, checking the LadybugDB tag), and linked by `scripts/link-extension.sh`. Prototype: `spike/shim.cpp`.
+
+Registers `elpi_init`, `elpi_save`, `elpi_drop` and `elpi_import` as standalone functions whose bind asks Lean for the statements and whose `rewriteFunc` returns them; `elpi_export`, `elpi_signature` and `elpi_query` as table functions; and the options `elpi_fuel`, `elpi_timeout_ms`, `elpi_max_solutions`, `elpi_max_facts`, `elpi_slice_steps` and `elpi_cache_size`. Integration tests: `tests/integration/integration.c`.
 
 - module:: shim/extension.cpp
 - milestone:: Spike
@@ -20,19 +22,23 @@ Exports only the loader entry points `init` and `name`; everything else is hidde
 - motivated_by:: [[decisions#Logic in Lean behind a thin C++ shim]]
 - motivated_by:: [[decisions#CALL functions first]]
 - motivated_by:: [[constraints#Extensions are C++ shared libraries]]
+- motivated_by:: [[decisions#One rewritten statement per write]]
+- motivated_by:: [[decisions#Explicit elpi_init]]
 - introduced_by:: [[changes#spike-lean-runtime-in-ladybug]]
 
 ## Runtime bridge
 
 The C ABI between shim and Lean: runtime start-up, per-thread initialization, handles, UTF-8 strings and flat fact and row buffers. Source: `Marien/Ffi.lean`, `shim/lean_bridge.c`.
 
-Follows LeanElpi's `ensure_thread` pattern: a thread-local flag calls `lean_initialize_thread` once per LadybugDB worker thread. Starts the runtime once per process under `pthread_once`, and defines a runtime-only `lean_initialize` so the Lean compiler package is never linked. Prototype: `spike/bridge.c`. The Lean side calls LeanElpi only through its `Elpi.Host` module (signatures, goals from terms, fuel slices, facts as terms, clause AST).
+The Lean entry points (`Marien/Ffi.lean`) take and return strings, string arrays, value arrays and opaque handles; `shim/lean_bridge.h` turns them into a plain C API whose symbols all start with `marien_bridge_`, the only Lean-side symbols the Linux link keeps global. Follows LeanElpi's `ensure_thread` pattern: a thread-local flag calls `lean_initialize_thread` once per LadybugDB worker thread. Starts the runtime once per process under `pthread_once`, and defines a runtime-only `lean_initialize` so the Lean compiler package is never linked. Prototype: `spike/bridge.c`. The Lean side calls LeanElpi only through its `Elpi.Host` module (signatures, goals from terms, fuel slices, facts as terms, clause AST).
 
 - module:: Marien.Ffi
 - milestone:: Spike
 - motivated_by:: [[decisions#Logic in Lean behind a thin C++ shim]]
 - motivated_by:: [[constraints#One Lean runtime per process]]
 - motivated_by:: [[decisions#Runtime-only Lean initialization]]
+- motivated_by:: [[decisions#Catalog as JSON, rows as column batches]]
+- changed_by:: [[changes#add-tracer-bullet]]
 - introduced_by:: [[changes#spike-lean-runtime-in-ladybug]]
 
 ## Engine contract
@@ -53,19 +59,22 @@ Reads LadybugDB's catalog (node tables, rel tables, FROM/TO pairs, property type
 - milestone:: M1
 - depends_on:: [[components#Extension shim]]
 - motivated_by:: [[decisions#Schema types at runtime and Lean inductives offline]]
+- motivated_by:: [[decisions#Catalog as JSON, rows as column batches]]
 - introduced_by:: [[changes#add-tracer-bullet]]
 
 ## Table scanner
 
 Scans node and rel tables, or the neighbourhood of a batch of anchors, through LadybugDB's storage and graph API in the calling transaction. Source: `shim/scan.cpp`.
 
-Neighbourhood scans (radius and directions from the analysis) arrive with partitioning in M3.
+Node tables are scanned with `NodeTableScanState` a vector at a time; rel tables through `graph::OnDiskGraph`, with each endpoint's primary keys gathered by offset first. Neighbourhood scans (radius and directions from the analysis) arrive with partitioning in M3.
 
 - module:: shim/scan.cpp
 - milestone:: M1
 - depends_on:: [[components#Extension shim]]
 - motivated_by:: [[decisions#Scan tables in the calling transaction]]
 - motivated_by:: [[decisions#Materialize facts per call]]
+- motivated_by:: [[decisions#Catalog as JSON, rows as column batches]]
+- motivated_by:: [[decisions#Edge ids are internal ids]]
 - introduced_by:: [[changes#add-tracer-bullet]]
 
 ## Schema model
@@ -91,6 +100,8 @@ Turns a schema into an ELPI signature: one kind per node table with a primary-ke
 - depends_on:: [[components#Schema model]]
 - motivated_by:: [[decisions#Predicate-per-property encoding]]
 - motivated_by:: [[decisions#Schema types at runtime and Lean inductives offline]]
+- motivated_by:: [[decisions#Snake-case names with a collision check]]
+- motivated_by:: [[decisions#Constructor and node predicate share the table name]]
 - introduced_by:: [[changes#add-tracer-bullet]]
 
 ## Value codec
@@ -110,7 +121,7 @@ Encodes LadybugDB values as ELPI terms and decodes result terms back into typed 
 
 The save pipeline (stage, typecheck, analyse), the escaped Cypher that persists `_elpi_module` rows, and drop, export and import. Source: `Marien/Store/Module.lean`.
 
-Source text is stored byte-exact; `unescape (escape s) = s` is proved.
+Source text is stored byte-exact; `unescape (escape s) = s` and the absence of a bare delimiter are proved over a model of LadybugDB's string-literal lexer (`Marien/Store/Literal.lean`).
 
 - module:: Marien.Store.Module
 - milestone:: M1
@@ -118,17 +129,19 @@ Source text is stored byte-exact; `unescape (escape s) = s` is proved.
 - depends_on:: [[components#Handle cache]]
 - motivated_by:: [[decisions#Rules stored in system tables]]
 - motivated_by:: [[decisions#CALL functions first]]
+- motivated_by:: [[decisions#One rewritten statement per write]]
 - introduced_by:: [[changes#add-tracer-bullet]]
 
 ## Handle cache
 
-In-memory cache of compiled LeanElpi programs keyed by module version and schema hash; never persisted. Source: `Marien/Store/Cache.lean`.
+In-memory LRU cache of compiled LeanElpi programs keyed by module version and source, schema hash and the sources of accumulated modules; never persisted. Source: `Marien/Store/Cache.lean`.
 
 - module:: Marien.Store.Cache
 - milestone:: M1
 - depends_on:: [[components#Signature generator]]
 - motivated_by:: [[decisions#Rules stored in system tables]]
 - motivated_by:: [[decisions#Lazy recheck by schema hash]]
+- motivated_by:: [[decisions#Handle cache keyed by source hashes]]
 - introduced_by:: [[changes#add-tracer-bullet]]
 
 ## Executor
@@ -145,6 +158,7 @@ M1 ships the untyped `elpi_query`; M2 adds typed `elpi_run`; M3 adds narrowed sc
 - motivated_by:: [[decisions#Fuel-sliced execution that fails loudly]]
 - motivated_by:: [[decisions#Typed entry points and an untyped debug query]]
 - motivated_by:: [[constraints#Out of fuel discards the search]]
+- motivated_by:: [[decisions#Debug queries load the tables their goal names]]
 - introduced_by:: [[changes#add-tracer-bullet]]
 
 ## Validator

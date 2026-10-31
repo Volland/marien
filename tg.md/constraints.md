@@ -110,3 +110,44 @@ Resolved in the build: `scripts/build-leanrt-pic.sh` recompiles the 35 runtime f
 - constrains:: [[decisions#Out-of-tree extension with its own repository]] {note: "Linux builds rebuild libleanrt with scripts/build-leanrt-pic.sh, once per Lean toolchain"}
 - constrains:: [[components#Runtime bridge]] {note: "on Linux the Lean side is partially linked and localized; with the rebuilt runtime it shares the host's libstdc++"}
 
+
+## Rewrite functions take literals only
+
+LadybugDB runs a table function's bind and `rewriteFunc` while parsing, before parameter values are bound, so a rewriting function sees literal arguments only; a `$param` binds as an untyped null.
+
+Only a bare `CALL f(...)` is rewritten; `CALL f(...) RETURN *` runs the function's `tableFunc` instead. In autocommit mode bind and rewrite run in their own read-only transaction, which commits before the rewritten statements run.
+
+- source:: LadybugDB v0.22.1 `src/parser/visitor/standalone_call_rewriter.cpp:25-51`, `src/binder/expression_binder.cpp:139-156`, `src/function/table/bind_input.cpp:14-17`
+- constrains:: [[components#Extension shim]] {strength: must, note: "elpi_save(name, source) takes string literals (rule-storage, Save checks before storing)"}
+- constrains:: [[decisions#One rewritten statement per write]]
+
+## A rewrite is a batch of statements
+
+The text `rewriteFunc` returns is parsed as a new batch: several `;`-separated statements may follow each other, each in its own auto transaction, so a batch is atomic only inside an explicit transaction.
+
+A single statement may chain `MERGE`, `SET`, `OPTIONAL MATCH ... DELETE`, `UNWIND`, `MATCH` and `CREATE` with `WITH`, and is atomic on its own (checked against the 0.22.1 CLI on 2026-10-31).
+
+- source:: LadybugDB v0.22.1 `src/main/client_context.cpp:467-547`; `Cypher.g4:337-351`
+- constrains:: [[decisions#One rewritten statement per write]] {strength: must}
+- constrains:: [[components#Module store]] {strength: must, note: "elpi_import and elpi_init return several statements (rule-storage, Export and import)"}
+
+## A pred declaration replaces a constant of the same name
+
+In LeanElpi a `type` declaration of a name already declared adds an overload, but a later `pred` declaration replaces the constant; overloading a constructor and a predicate works only with the `pred` first.
+
+- source:: lean-elpi `Elpi/Core/Typecheck.lean:150-170` (`overloads`); probed with `Marien.Engine.compile`, 2026-10-31
+- constrains:: [[components#Signature generator]] {strength: must, note: "emit pred t before type t"}
+
+## Names starting with an underscore are variables
+
+ELPI reads every identifier that starts with `_` or an upper-case letter as a variable, so the name of a system table such as `_elpi_module.source` can never be written as a constant in a module.
+
+- source:: ELPI lexical conventions; lean-elpi `Elpi/Core/Lexer.lean`
+- constrains:: [[components#Signature generator]] {strength: must, note: "system tables cannot be named in rules; every part of a generated name must start with a lower-case letter (schema-encoding, Injective naming)"}
+
+## LeanElpi integers are unbounded
+
+LeanElpi represents ELPI `int` values as Lean `Int`, so every LadybugDB integer, UINT64 and INT128 included, maps to an `int` without loss or range check.
+
+- source:: lean-elpi `Elpi/Core/Term.lean:30` (`int (i : Int)`)
+- constrains:: [[components#Value codec]] {strength: must, note: "no range check (schema-encoding, Property type mapping)"}

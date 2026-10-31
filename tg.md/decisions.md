@@ -256,7 +256,7 @@ Record: [ADR 0022](../docs/adr/0022-runtime-only-lean-initialization.md).
 
 Marien calls LeanElpi only through LeanElpi's `Elpi.Host` module, wrapped once in `Marien.Engine`; no other Marien module imports the engine.
 
-**Context.** Marien needs signatures, goals from terms, structured solutions, resumable slices, facts as terms and the clause AST, which LeanElpi 0.3.3 keeps in internal modules or lacks. **Consequences.** An engine upgrade touches one file, and `tests/EngineContract.lean` checks every scenario of `engine-host-api` against the pinned release. LeanElpi commits to a public AST and result-term type. Until 0.4.0 is released Marien pins the façade by commit.
+**Context.** Marien needs signatures, goals from terms, structured solutions, resumable slices, facts as terms and the clause AST, which LeanElpi 0.3.3 keeps in internal modules or lacks. **Consequences.** An engine upgrade touches one file, and `tests/EngineContract.lean` checks every scenario of `engine-host-api` against the pinned release. LeanElpi commits to a public AST and result-term type. Marien pins the façade by commit until the release that carries everything it uses (0.4.2).
 
 Record: [ADR 0023](../docs/adr/0023-leanelpi-host-facade.md).
 
@@ -264,3 +264,99 @@ Record: [ADR 0023](../docs/adr/0023-leanelpi-host-facade.md).
 - motivated_by:: [[decisions#Logic in Lean behind a thin C++ shim]] {weight: primary}
 - motivated_by:: [[decisions#LeanElpi is the engine]]
 - motivated_by:: [[constraints#Out of fuel discards the search]]
+
+## Catalog as JSON, rows as column batches
+
+The catalog crosses from the shim to Lean as JSON, read once per call; table rows cross as column batches of values built through the runtime bridge, never one call per row.
+
+**Context.** The catalog is small and the offline tool of M5 reads the same JSON from a file; rows can number millions. **Consequences.** The C++ side writes JSON and pushes values, the codec turns them into terms, and the bridge API never exposes a Lean structure layout.
+
+Record: `openspec/changes/add-tracer-bullet/design.md`.
+
+- status:: accepted
+- motivated_by:: [[decisions#Logic in Lean behind a thin C++ shim]] {weight: primary}
+- motivated_by:: [[decisions#Scan tables in the calling transaction]]
+
+## Snake-case names with a collision check
+
+Generated identifiers are lower snake case (`ReportsTo` becomes `reports_to`); a clash between two catalog names, a keyword or a library name fails generation and names what clashed.
+
+**Context.** Hand-written rules must read well; clashes are rare. **Consequences.** The naming is injective whenever generation succeeds (`assignNames_injective`); a schema with a clash cannot be used until a table or property is renamed. Rejected: an always-injective escape scheme, which makes every rule harder to read.
+
+Record: `openspec/changes/add-tracer-bullet/design.md`.
+
+- status:: accepted
+- motivated_by:: [[decisions#Predicate-per-property encoding]] {weight: primary}
+- motivated_by:: [[constraints#Names starting with an underscore are variables]]
+
+## Constructor and node predicate share the table name
+
+A node table `T` gives the constructor `t` (applied to the key) and the predicate `t` listing every node; a rel table gives the edge constructor and the rel predicate `r`. The signature declares each predicate before its constructor.
+
+**Context.** The later specs write `person 42` for a node and `reports_to P E M` for an edge. **Consequences.** LeanElpi resolves the overloading by type; the declaration order is load-bearing and tested.
+
+Record: `openspec/changes/add-tracer-bullet/specs/schema-encoding/spec.md`.
+
+- status:: accepted
+- motivated_by:: [[decisions#Predicate-per-property encoding]] {weight: primary}
+- motivated_by:: [[constraints#A pred declaration replaces a constant of the same name]]
+
+## Edge ids are internal ids
+
+The edge term of a rel table wraps LadybugDB's internal rel id (table id and offset in one integer); results report nodes by primary key. Edge ids are stable only within one transaction.
+
+**Context.** Rel tables have no primary key, and parallel edges must stay distinct. **Consequences.** Enough for a read-only run; edge terms must not be stored across transactions.
+
+Record: `openspec/changes/add-tracer-bullet/design.md`.
+
+- status:: accepted
+- motivated_by:: [[decisions#Read-only runs]] {weight: primary}
+
+## Explicit elpi_init
+
+`CALL elpi_init()` creates `_elpi_module` and `_elpi_accumulates` with `CREATE ... IF NOT EXISTS`; every other function that needs them fails with a message naming `elpi_init()`.
+
+**Context.** DDL during `LOAD` would surprise users and may be impossible on a read-only connection. **Consequences.** One extra call per database; init is idempotent.
+
+Record: `openspec/changes/add-tracer-bullet/design.md`.
+
+- status:: accepted
+- motivated_by:: [[decisions#Rules stored in system tables]] {weight: primary}
+- motivated_by:: [[constraints#Table functions can rewrite into Cypher]]
+
+## One rewritten statement per write
+
+`elpi_save` and `elpi_drop` check everything at bind time and return one Cypher statement through `rewriteFunc`; `elpi_init` and `elpi_import` return several, wrapped in `BEGIN TRANSACTION … COMMIT` unless the caller already runs a transaction.
+
+**Context.** A rewrite batch is not atomic in autocommit mode. **Consequences.** A save is atomic with the caller's transaction; module sources are embedded as escaped literals whose correctness is proved (`unescape_escape`, `escape_no_delim`).
+
+Record: `openspec/changes/add-tracer-bullet/design.md`.
+
+- status:: accepted
+- motivated_by:: [[constraints#Table functions can rewrite into Cypher]] {weight: primary}
+- motivated_by:: [[constraints#A rewrite is a batch of statements]]
+- motivated_by:: [[constraints#Rewrite functions take literals only]]
+
+## Handle cache keyed by source hashes
+
+The handle cache keys a compiled module by name, version, source hash, schema hash and the source hashes of the modules it accumulates.
+
+**Context.** The cache is per process and shared by every database it opens, and versions restart after a drop, so a version alone served one database's program to another (found by the integration tests). **Consequences.** A changed dependency or schema compiles anew; equal sources share an entry across databases.
+
+Record: `openspec/changes/add-tracer-bullet/design.md`.
+
+- status:: accepted
+- motivated_by:: [[decisions#Lazy recheck by schema hash]] {weight: primary}
+- motivated_by:: [[decisions#Rules stored in system tables]]
+
+## Debug queries load the tables their goal names
+
+`elpi_query` materializes the tables of every generated predicate the module mentions and, in addition, those named in the goal text, so a debug goal such as `person.born P D` sees facts even when the module never calls `person.born`.
+
+**Context.** Materialization by the module's metadata alone made such goals answer nothing, silently. **Consequences.** A debug query costs at most the tables its goal adds; typed entry points (M2) load what the module reaches.
+
+Record: `openspec/changes/add-tracer-bullet/design.md`.
+
+- status:: accepted
+- motivated_by:: [[decisions#Typed entry points and an untyped debug query]] {weight: primary}
+- motivated_by:: [[decisions#Materialize facts per call]]
