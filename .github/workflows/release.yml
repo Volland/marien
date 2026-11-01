@@ -1,0 +1,100 @@
+# Release (OpenSpec change add-typed-validation, capability `distribution`): build and test the
+# extension for every LadybugDB version × OS × CPU of scripts/release-matrix.sh, upload one
+# artifact per entry named with all
+# three, and publish only when every entry passed: `publish` needs the whole matrix, so one
+# failing entry blocks the release of all of them. The published site has the layout LadybugDB's
+# extension installer fetches (scripts/package-extension.sh); each artifact is also attached to
+# the GitHub release.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  matrix:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: m
+        run: echo "matrix=$(scripts/release-matrix.sh | tr -d '\n')" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: matrix
+    strategy:
+      fail-fast: true
+      matrix: ${{ fromJSON(needs.matrix.outputs.matrix) }}
+    runs-on: ${{ matrix.target.runner }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MARIEN_NEW_PLATFORM: '1'
+      ARTIFACT: marien-${{ github.ref_name }}-lbug${{ matrix.ladybug }}-${{ matrix.target.os }}-${{ matrix.target.cpu }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pin the LadybugDB version of this entry
+        run: echo "${{ matrix.ladybug }}" > scripts/ladybug-version
+      - name: Install Lean (elan)
+        if: ${{ !matrix.target.docker }}
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: OpenSSL 3 for LadybugDB's CMake
+        if: ${{ !matrix.target.docker }}
+        run: brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+      - name: Build, check and test (macOS)
+        if: ${{ !matrix.target.docker }}
+        run: |
+          scripts/build-extension.sh strip
+          lake test
+          scripts/check-deps.sh build/libmarien.lbug_extension
+          scripts/check-exports.sh build/libmarien.lbug_extension
+          scripts/check-size.sh build/libmarien.lbug_extension
+          tests/integration/run.sh
+          scripts/test-install.sh build/libmarien.lbug_extension
+          mkdir -p out && cp build/libmarien.lbug_extension out/
+      - name: Build, check and test (Linux, in Docker)
+        if: ${{ matrix.target.docker }}
+        run: |
+          git clone -q --depth 1 --branch "v$(cat scripts/ladybug-version)" https://github.com/LadybugDB/ladybug .deps/ladybug
+          tests/linux/docker.sh
+          mkdir -p out && cp build/linux/libmarien.lbug_extension out/
+      - name: Package in the extension-server layout
+        run: scripts/package-extension.sh out/libmarien.lbug_extension "dist/$ARTIFACT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: dist/${{ env.ARTIFACT }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Merge into one extension server and zip each entry
+        run: |
+          mkdir -p site
+          for d in artifacts/*/; do
+            cp -R "$d"/. site/
+            (cd "$d" && zip -qr "../../$(basename "$d").zip" .)
+          done
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - uses: actions/deploy-pages@v4
+      - name: GitHub release with every entry
+        run: gh release create "${{ github.ref_name }}" -R "${{ github.repository }}" --generate-notes *.zip

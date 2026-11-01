@@ -42,7 +42,10 @@ set_target_properties(marien_objs PROPERTIES
   CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON
   C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 target_compile_options(marien_objs PRIVATE -O2)
-target_compile_definitions(marien_objs PRIVATE NDEBUG)
+# The version the load-time check compares with; PINNED_VERSION overrides it for the test that a
+# mismatched build is refused.
+set(PINNED_VERSION "${LADYBUG_VERSION}" CACHE STRING "LadybugDB version the load check expects")
+target_compile_definitions(marien_objs PRIVATE NDEBUG MARIEN_LADYBUG_VERSION="${PINNED_VERSION}")
 target_include_directories(marien_objs PRIVATE
   "$<$<COMPILE_LANGUAGE:C>:${LEAN_PREFIX}/include>"
   "$<$<COMPILE_LANGUAGE:CXX>:${LADYBUG_SRC}/src/include;${LADYBUG_GEN}/src/include;${LADYBUG_SRC}/third_party/fastpfor;${LADYBUG_SRC}/third_party/alp/include>")
@@ -51,6 +54,8 @@ set(EXTENSION "${CMAKE_BINARY_DIR}/libmarien.lbug_extension")
 add_custom_command(OUTPUT "${EXTENSION}"
   COMMAND "${ROOT}/scripts/link-extension.sh" "${EXTENSION}" ${LINK_MODE}
     "${CMAKE_CURRENT_SOURCE_DIR}/exports" "${MARIEN_A}" -- $<TARGET_OBJECTS:marien_objs> "${ELPI_A}"
-  DEPENDS marien_objs lean_archives "${CMAKE_CURRENT_SOURCE_DIR}/exports.txt" "${CMAKE_CURRENT_SOURCE_DIR}/exports.map"
+  # the object files themselves, so a changed source relinks (the target alone does not)
+  DEPENDS marien_objs $<TARGET_OBJECTS:marien_objs> lean_archives "${MARIEN_A}" "${ELPI_A}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/exports.txt" "${CMAKE_CURRENT_SOURCE_DIR}/exports.map"
   COMMAND_EXPAND_LISTS VERBATIM)
 add_custom_target(extension ALL DEPENDS "${EXTENSION}")

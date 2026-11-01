@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Build build/libmarien.lbug_extension with shim/CMakeLists.txt.
-# Usage: shim/build.sh [strip|nostrip]   Env: LADYBUG_SRC, LADYBUG_GEN, CC, CXX, LEAN_RUNTIME_A
+# Usage: shim/build.sh [strip|nostrip]   Env: LADYBUG_SRC, LADYBUG_GEN, CC, CXX, LEAN_RUNTIME_A,
+#   PINNED_VERSION (the LadybugDB version the load check expects; default scripts/ladybug-version)
+#   and OUT (default build/libmarien.lbug_extension)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 MODE="${1:-strip}"
@@ -12,7 +14,11 @@ fi
 ARGS=(-DLINK_MODE="$MODE")
 [ -n "${LADYBUG_SRC:-}" ] && ARGS+=(-DLADYBUG_SRC="$LADYBUG_SRC")
 [ -n "${LADYBUG_GEN:-}" ] && ARGS+=(-DLADYBUG_GEN="$LADYBUG_GEN")
-cmake -S shim -B "build/shim-$MODE" -DCMAKE_BUILD_TYPE=Release "${ARGS[@]}" >/dev/null
-cmake --build "build/shim-$MODE" --parallel >/dev/null
-cp "build/shim-$MODE/libmarien.lbug_extension" build/libmarien.lbug_extension
-echo "built build/libmarien.lbug_extension ($MODE)"
+DIR="build/shim-$MODE"
+if [ -n "${PINNED_VERSION:-}" ]; then ARGS+=(-DPINNED_VERSION="$PINNED_VERSION"); DIR="$DIR-$PINNED_VERSION"; fi
+OUT="${OUT:-build/libmarien.lbug_extension}"
+cmake -S shim -B "$DIR" -DCMAKE_BUILD_TYPE=Release "${ARGS[@]}" >/dev/null
+cmake --build "$DIR" --parallel >/dev/null
+mkdir -p "$(dirname "$OUT")"
+cp "$DIR/libmarien.lbug_extension" "$OUT"
+echo "built $OUT ($MODE)"

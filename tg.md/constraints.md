@@ -104,7 +104,7 @@ The Lean 4.35 Linux toolchain's `libleanrt.a` uses local-exec thread-local stora
 
 The same toolchain builds its runtime against its own static libc++, while LadybugDB on Linux uses libstdc++. `libInit.a`, `libStd.a`, `libLean.a`, GMP, libuv and LeanElpi have no local-exec TLS and no libc++ symbols.
 
-Resolved in the build: `scripts/build-leanrt-pic.sh` recompiles the 35 runtime files and mimalloc at the toolchain's tag with `-fPIC`, global-dynamic TLS and the system libstdc++, against the toolchain's own `lean/config.h`, `lean.h` and `mimalloc.h`. `LEAN_RUNTIME_A` makes `scripts/link-extension.sh` use that archive and drop the toolchain's libc++. With it the spike passes every Linux check, at 3.8 MB (1.2 MB gzipped).
+Resolved in the build: `scripts/build-leanrt-pic.sh` recompiles the 35 runtime files and mimalloc at the toolchain's tag with `-fPIC`, global-dynamic TLS and the system libstdc++, against the toolchain's own `lean/config.h`, `lean.h` and `mimalloc.h`. `LEAN_RUNTIME_A` makes `scripts/link-extension.sh` use that archive and drop the toolchain's libc++. With it the spike passes every Linux check, at 3.8 MB (1.2 MB gzipped), and so does the tracer bullet's extension (4.5 MB, 1.46 MB gzipped; `tests/linux/run.sh`, all 33 integration tests).
 
 - source:: `readelf -rW` of the toolchain archives, a gdb backtrace into `mi_thread_init`, and the rebuilt archive's checks in Docker (Ubuntu 24.04, aarch64); `spike/RESULT.md`, 2026-10-31
 - constrains:: [[decisions#Out-of-tree extension with its own repository]] {note: "Linux builds rebuild libleanrt with scripts/build-leanrt-pic.sh, once per Lean toolchain"}
@@ -151,3 +151,22 @@ LeanElpi represents ELPI `int` values as Lean `Int`, so every LadybugDB integer,
 
 - source:: lean-elpi `Elpi/Core/Term.lean:30` (`int (i : Int)`)
 - constrains:: [[components#Value codec]] {strength: must, note: "no range check (schema-encoding, Property type mapping)"}
+
+## INSTALL accepts only official extensions
+
+LadybugDB 0.22.1 binds `INSTALL <name>` and `LOAD <name>` only for names on its built-in list of official extensions; any other name is refused before anything is downloaded.
+
+Other extensions load by path with `LOAD EXTENSION '<path>'`. The installer's download layout is `<repo>v<extension version>/<os>_<arch>/<name>/lib<name>.lbug_extension`, with extension version 0.22.0 for release 0.22.1.
+
+- source:: `src/binder/bind/bind_extension.cpp` and `src/extension/extension.cpp` of LadybugDB v0.22.1; `scripts/test-install.sh`, 2026-11-01
+- constrains:: [[decisions#Out-of-tree extension with its own repository]] {strength: must, note: "INSTALL marien FROM <url> needs LadybugDB to accept third-party names; until then users download from the server layout and LOAD EXTENSION by path"}
+- constrains:: [[components#Extension shim]] {note: "published in the installer's layout so it works once INSTALL accepts it"}
+
+## The CLI does not export the release version
+
+LadybugDB's CLI binary does not export `lbug::main::Version::getVersion`; liblbug does. Both export `StorageVersionInfo::getStorageVersion`, and storage version 49 covers both 0.22.0 and 0.22.1.
+
+An extension that calls `getVersion` directly fails to load into the CLI with an unresolved symbol.
+
+- source:: `nm -gU` of the v0.22.1 CLI and liblbug (macOS arm64), and a failed `LOAD EXTENSION` in the CLI, 2026-11-01
+- constrains:: [[components#Extension shim]] {strength: must, note: "version symbols are looked up with dlsym at load time"}

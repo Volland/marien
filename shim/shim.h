@@ -11,6 +11,9 @@
 namespace lbug::main {
 class ClientContext;
 }
+namespace lbug::common {
+class Value;
+}
 
 namespace marien {
 
@@ -21,14 +24,17 @@ std::string catalogJson(lbug::main::ClientContext& ctx);
 // Throws an error telling the user to run elpi_init() when the system tables are missing.
 void requireModuleTables(lbug::main::ClientContext& ctx);
 
-// The rows of _elpi_module as a JSON array of {name, version, source, derived}, read in the
-// caller's transaction.
+// The rows of _elpi_module as a JSON array of {name, version, source, derived, schema_hash,
+// status, error}, read in the caller's transaction.
 std::string storedModulesJson(lbug::main::ClientContext& ctx);
 
 // Scan every table the session asks for, in the caller's transaction, and add the rows as
 // facts. Calls `checkInterrupt` between batches. Throws on failure.
 void materialize(lbug::main::ClientContext& ctx, marien_session*& session,
     const std::function<void()>& checkInterrupt);
+
+// Append a database value to a column for Lean (DATE as days, TIMESTAMP as microseconds).
+void pushValue(marien_values* out, const lbug::common::Value& v);
 
 // A JSON string literal.
 std::string jsonString(const std::string& s);

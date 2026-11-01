@@ -36,6 +36,16 @@ names map to one identifier, or an identifier is a keyword or library name, so t
 injective whenever generation succeeds (`assignNames_injective`). `_elpi_*` tables never reach
 the signature (`signature_excludes_system`).
 
+Every signature starts with the validation protocol's kinds, and every table gets a constructor
+of the `subject` union, named `subj_<table>`:
+
+```
+kind severity type.
+type error, warning, info severity.
+kind subject type.
+type subj_person person -> subject.
+```
+
 `Signature.ofSchema` is the single encoding function, shared with the offline codegen of M5.
 -/
 
@@ -100,6 +110,10 @@ inductive Origin where
   | endpoint (rel : String) (src : Bool)
   /-- The constructor of a union endpoint kind for one node table. -/
   | endpointCtor (rel : String) (src : Bool) (node : String)
+  /-- The `subject` constructor of a node or rel table. -/
+  | subject (table : String)
+  /-- A kind or constant of the validation protocol (`severity`, `error`, `subject`, …). -/
+  | protocol (name : String)
   deriving DecidableEq, Repr, Inhabited
 
 namespace Origin
@@ -113,6 +127,8 @@ def ident : Origin → String
   | .record t path => snake t ++ "." ++ ".".intercalate (path.map snake) ++ ".rec"
   | .endpoint r s => snake r ++ "." ++ side s
   | .endpointCtor r s t => snake r ++ "." ++ side s ++ "." ++ snake t
+  | .subject t => "subj_" ++ snake t
+  | .protocol n => n
 
 /-- The catalog names the identifier is made of. -/
 def parts : Origin → List String
@@ -121,6 +137,13 @@ def parts : Origin → List String
   | .record t path => t :: path
   | .endpoint r _ => [r]
   | .endpointCtor r _ t => [r, t]
+  | .subject t => [t]
+  | .protocol _ => []
+
+/-- The table an identifier belongs to; `none` for the protocol's own names. -/
+def table? : Origin → Option String
+  | .node t | .rel t | .prop t _ | .record t _ | .endpoint t _ | .endpointCtor t _ _ | .subject t => some t
+  | .protocol _ => none
 
 def describe : Origin → String
   | .node t => s!"node table {t}"
@@ -129,6 +152,8 @@ def describe : Origin → String
   | .record t path => s!"struct {t}.{".".intercalate path}"
   | .endpoint r s => s!"{side s} endpoints of {r}"
   | .endpointCtor r s t => s!"{side s} endpoint {t} of {r}"
+  | .subject t => s!"the subject constructor of {t}"
+  | .protocol n => s!"the validation protocol's {n}"
 
 /-- Every part becomes a word that starts with an ASCII lower-case letter, as ELPI constants
 must (a leading `_` or upper-case letter would make a variable). -/
@@ -145,6 +170,8 @@ structure RecordDecl where
   origin : Origin
   ctor : String
   fields : List ETy
+  /-- The STRUCT type it encodes, with its field names. -/
+  lty : LType
   deriving Repr, Inhabited
 
 structure PropPlan where
@@ -158,6 +185,8 @@ structure NodePlan where
   id : String
   keyName : String
   keyTy : ETy
+  /-- The primary key's LadybugDB type. -/
+  keyLty : LType
   props : List PropPlan
   /-- Records used by the key and the properties, inner ones first. -/
   records : List RecordDecl
@@ -204,7 +233,7 @@ partial def mapType (table : String) (path : List String) : LType → Option (ET
       tys := tys ++ [t]
       rs := rs ++ r
     let o := Origin.record table path
-    some (.record o.ident tys, rs ++ [{ origin := o, ctor := o.ident, fields := tys }])
+    some (.record o.ident tys, rs ++ [{ origin := o, ctor := o.ident, fields := tys, lty := .struct fs }])
   | .other _ => none
 
 def planProp (table : String) (p : Property) : Option (PropPlan × List RecordDecl) :=
@@ -215,6 +244,7 @@ def planNode (n : NodeTable) : Option NodePlan := do
   let (keyTy, keyRecs) ← mapType n.name [n.key.name] n.key.ty
   let props := n.props.filterMap (planProp n.name)
   some { name := n.name, id := (Origin.node n.name).ident, keyName := n.key.name, keyTy,
+         keyLty := n.key.ty,
          props := props.map (·.1), records := keyRecs ++ props.flatMap (·.2) }
 
 def planRel (encoded : List String) (r : RelTable) : Option RelPlan :=
@@ -285,12 +315,18 @@ theorem signature_excludes_system (s : Schema) :
 
 /-! ### Names -/
 
+/-- The kinds and constants of the validation protocol. -/
+def protocolNames : List String := ["severity", "error", "warning", "info", "subject"]
+
 /-- Every identifier the signature declares, by what it stands for. -/
 def origins (p : Plan) : List Origin :=
+  protocolNames.map .protocol ++
   p.nodes.flatMap (fun n =>
-    .node n.name :: n.props.map (fun pr => .prop n.name pr.name) ++ n.records.map (·.origin)) ++
+    .node n.name :: .subject n.name :: n.props.map (fun pr => .prop n.name pr.name) ++
+      n.records.map (·.origin)) ++
   p.rels.flatMap fun r =>
-    .rel r.name :: r.props.map (fun pr => .prop r.name pr.name) ++ r.records.map (·.origin) ++
+    .rel r.name :: .subject r.name :: r.props.map (fun pr => .prop r.name pr.name) ++
+      r.records.map (·.origin) ++
     (if r.multi then
       [.endpoint r.name true, .endpoint r.name false] ++
       r.srcTables.map (.endpointCtor r.name true) ++ r.dstTables.map (.endpointCtor r.name false)
@@ -366,7 +402,8 @@ def nodeDecls (n : NodePlan) : String :=
   "\n".intercalate <|
     [s!"kind {n.id} type."] ++ recordDecls n.records ++
     [s!"pred {n.id} o:{n.id}.", s!"type {n.id} {n.keyTy.render} -> {n.id}."] ++
-    n.props.map fun p => s!"pred {p.pred} o:{n.id}, o:{p.ty.render}."
+    n.props.map (fun p => s!"pred {p.pred} o:{n.id}, o:{p.ty.render}.") ++
+    [s!"type {(Origin.subject n.name).ident} {n.id} -> subject."]
 
 def relDecls (nodeId : String → String) (r : RelPlan) : String :=
   let ends : List String × String × String :=
@@ -384,7 +421,13 @@ def relDecls (nodeId : String → String) (r : RelPlan) : String :=
   "\n".intercalate <|
     [s!"kind {r.id} type."] ++ endDecls ++ recordDecls r.records ++
     [s!"pred {r.id} o:{src}, o:{r.id}, o:{dst}.", s!"type {r.id} int -> {r.id}."] ++
-    r.props.map fun p => s!"pred {p.pred} o:{r.id}, o:{p.ty.render}."
+    r.props.map (fun p => s!"pred {p.pred} o:{r.id}, o:{p.ty.render}.") ++
+    [s!"type {(Origin.subject r.name).ident} {r.id} -> subject."]
+
+/-- The validation protocol's declarations, at the head of every signature. -/
+-- @tg: implements:: [[openspec:validation#Violation protocol]] {confidence: partial, note: "the prepended severity and subject kinds"}
+def protocolDecls : String :=
+  "kind severity type.\ntype error, warning, info severity.\nkind subject type."
 
 /-- A generated signature: declarations per table, in catalog order, and warnings. -/
 structure Signature where
@@ -396,7 +439,12 @@ structure Signature where
 
 namespace Signature
 
-def text (s : Signature) : String := "\n".intercalate (s.tables.map (·.2)) ++ "\n"
+def text (s : Signature) : String := "\n".intercalate (protocolDecls :: s.tables.map (·.2)) ++ "\n"
+
+/-- The table a generated identifier belongs to (kind, constructor, predicate, record or
+subject constructor); `none` for any other name. -/
+def tableOf? (s : Signature) (ident : String) : Option String :=
+  ((origins s.plan).find? (·.ident == ident)).bind Origin.table?
 
 /-- The declarations of one table, by catalog name. -/
 def table? (s : Signature) (name : String) : Option String := (s.tables.find? (·.1 == name)).map (·.2)
@@ -411,6 +459,7 @@ def preds (s : Signature) : List (String × String) :=
 -- @tg: implements:: [[openspec:schema-encoding#Rel table encoding]]
 -- @tg: implements:: [[openspec:schema-encoding#Property type mapping]]
 -- @tg: implements:: [[openspec:schema-encoding#System tables are invisible to rules]]
+-- @tg: implements:: [[openspec:validation#Subject union kind]]
 def ofSchema (reserved : String → Bool) (s : Schema) : Except NameError Signature := do
   let p := Encoding.plan s
   let _ ← assignNames reserved p

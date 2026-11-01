@@ -34,6 +34,12 @@ structure Stored where
   source : String
   /-- The `derived` JSON written by the save. -/
   derived : String := ""
+  /-- The reached-table hash stored by the last save or recheck. -/
+  schemaHash : String := ""
+  /-- `ok`, `stale` or `broken`, as the last save or recheck stored it. -/
+  status : String := "ok"
+  /-- The error of a broken module. -/
+  error : String := ""
   deriving Repr, Inhabited
 
 /-- Name of the unit holding the generated signature; not a valid module name. -/
@@ -51,6 +57,9 @@ structure Derived where
   accumulates : List String
   /-- Predicates declared with `pred` and modes: the entry points. -/
   entries : List String
+  /-- Tables whose generated identifiers the module mentions, directly or through accumulated
+  modules; the reached-table hash covers exactly these. -/
+  reached : List String := []
   deriving Repr, Inhabited, BEq
 
 namespace Derived
@@ -58,14 +67,23 @@ namespace Derived
 def toJson (d : Derived) : Json :=
   Json.mkObj [("declares", Lean.toJson d.declares), ("defines", Lean.toJson d.defines),
     ("calls_generated", Lean.toJson d.callsGenerated), ("accumulates", Lean.toJson d.accumulates),
-    ("entries", Lean.toJson d.entries)]
+    ("entries", Lean.toJson d.entries), ("reached", Lean.toJson d.reached)]
 
 def ofJson? (j : Json) : Except String Derived := do
   return { declares := ← j.getObjValAs? (List String) "declares"
            defines := ← j.getObjValAs? (List String) "defines"
            callsGenerated := ← j.getObjValAs? (List String) "calls_generated"
            accumulates := ← j.getObjValAs? (List String) "accumulates"
-           entries := ← j.getObjValAs? (List String) "entries" }
+           entries := ← j.getObjValAs? (List String) "entries"
+           reached := (j.getObjValAs? (List String) "reached").toOption.getD [] }
+
+/-- The derived metadata of a stored module; empty if it has none readable. -/
+def ofStored (m : Stored) : Derived :=
+  ((Lean.Json.parse m.derived).bind ofJson?).toOption.getD
+    { declares := [], defines := [], callsGenerated := [], accumulates := [], entries := [] }
+
+/-- Whether the module takes part in validation. -/
+def validates (d : Derived) : Bool := d.declares.contains "violation"
 
 end Derived
 
@@ -133,22 +151,25 @@ partial def topoOrder (edges : List (String × List String)) : Except String (Li
 -- @tg: implements:: [[openspec:rule-storage#Module system tables]]
 def initStatements : List String :=
   ["CREATE NODE TABLE IF NOT EXISTS _elpi_module(name STRING PRIMARY KEY, version INT64, " ++
-     "source STRING, generated STRING, schema_hash STRING, status STRING, derived STRING, " ++
-     "saved_at TIMESTAMP)",
+     "source STRING, generated STRING, schema_hash STRING, status STRING, error STRING, " ++
+     "derived STRING, saved_at TIMESTAMP)",
+   -- tables made by the tracer bullet have no error column yet
+   "ALTER TABLE _elpi_module ADD IF NOT EXISTS error STRING DEFAULT ''",
    "CREATE REL TABLE IF NOT EXISTS _elpi_accumulates(FROM _elpi_module TO _elpi_module)",
    "RETURN 'ok' AS result"]
 
 /-- Store a checked module: one statement that bumps the version, writes the row and replaces
 its outgoing accumulate edges. -/
 def saveStatement (name source schemaHash derived : String) (deps : List String)
-    (warnings : List String := []) : String :=
+    (warnings : List String := []) (generated : String := "") : String :=
   let q := Literal.quote
   let depsPart :=
     if deps.isEmpty then ""
     else s!"UNWIND [{", ".intercalate (deps.map q)}] AS dep MATCH (d:_elpi_module \{name: dep}) " ++
       "CREATE (m)-[:_elpi_accumulates]->(d) WITH DISTINCT m "
   s!"MERGE (m:_elpi_module \{name: {q name}}) SET m.version = coalesce(m.version, 0) + 1, " ++
-  s!"m.source = {q source}, m.generated = '', m.schema_hash = {q schemaHash}, m.status = 'ok', " ++
+  s!"m.source = {q source}, m.generated = {q generated}, m.schema_hash = {q schemaHash}, " ++
+  "m.status = 'ok', m.error = '', " ++
   s!"m.derived = {q derived}, m.saved_at = current_timestamp() " ++
   "WITH m OPTIONAL MATCH (m)-[e:_elpi_accumulates]->() DELETE e WITH DISTINCT m " ++
   depsPart ++ s!"RETURN m.name AS name, m.version AS version, CAST([{", ".intercalate (warnings.map q)}] AS STRING[]) AS warnings"
@@ -160,9 +181,46 @@ structure Checked where
   name : String
   derived : Derived
   schemaHash : String
+  /-- The generated signature text it was checked against. -/
+  generated : String
   warnings : List String
   statement : String
   deriving Inhabited
+
+/-- The constants a type mentions. -/
+partial def tyNames : Elpi.Host.TyTerm → List String
+  | .const n => [n]
+  | .app h as => h :: as.flatMap tyNames
+  | .arrow a b => tyNames a ++ tyNames b
+  | .var _ => []
+
+/-- A predicate declaration as written. -/
+def renderPred (p : Elpi.Host.PredSig) : String :=
+  let arg (a : Elpi.Host.Arg) : String :=
+    (match a.mode with | .i => "i:" | .o => "o:") ++ toString a.ty
+  if p.args.isEmpty then s!"pred {p.name}" else s!"pred {p.name} {", ".intercalate (p.args.toList.map arg)}"
+
+/-- The protocol's declarations of `violation` and `violation_message`. -/
+def violationSig : Elpi.Host.PredSig :=
+  { name := "violation", args := #[{ mode := .o, ty := .const "severity" },
+      { mode := .o, ty := .const "string" }, { mode := .o, ty := .const "subject" }] }
+
+def violationMessageSig : Elpi.Host.PredSig :=
+  { name := "violation_message", args := #[{ mode := .i, ty := .const "string" },
+      { mode := .i, ty := .const "subject" }, { mode := .o, ty := .const "string" }] }
+
+/-- A module that declares `violation` (or `violation_message`) declares it exactly as the
+protocol does, with `pred`. -/
+-- @tg: implements:: [[openspec:validation#Violation protocol]]
+def checkProtocol (prog : Elpi.Host.Ast.Program) : Except String Unit := do
+  for expected in [violationSig, violationMessageSig] do
+    match prog.preds.find? (·.name == expected.name) with
+    | some p =>
+      unless p.args == expected.args do
+        throw s!"type error: {expected.name} must be declared as {renderPred expected}, not {renderPred p}"
+    | none =>
+      if prog.types.any (·.1 == expected.name) then
+        throw s!"type error: {expected.name} must be declared as {renderPred expected} (with pred and modes)"
 
 /-- Check a module against the schema and the stored modules, and build its save statement.
 Nothing is written unless this succeeds. -/
@@ -187,22 +245,84 @@ def check (schema : Schema) (stored : List Stored) (name source : String) :
   let all ← (Engine.clauses units libs (· != signatureUnit)).mapError errorText
   let generated := sig.preds.map (·.1)
   let mentioned := all.clauses.toList.flatMap fun c => termNames c.head ++ goalNames c.body
+  checkProtocol own
   let declares := own.preds.toList.map (·.name)
+  -- what accumulated modules reach is part of what this module reaches; their stored metadata
+  -- already includes their own accumulations
+  let deps := direct.filterMap fun d => (stored.find? (·.name == d)).map Derived.ofStored
+  let declared := own.preds.toList.flatMap (fun p => p.args.toList.flatMap (tyNames ·.ty)) ++
+    own.types.toList.flatMap (tyNames ·.2)
+  let reached := (mentioned ++ declared).filterMap sig.tableOf? ++ deps.flatMap (·.reached)
   let derived : Derived :=
     { declares
       defines := (own.clauses.toList.map (·.pred)).eraseDups
-      callsGenerated := Schema.sortStrings (generated.filter mentioned.contains).eraseDups
+      callsGenerated := Schema.sortStrings
+        ((generated.filter mentioned.contains) ++ deps.flatMap (·.callsGenerated)).eraseDups
       accumulates := direct
-      entries := declares }
-  let hash := Schema.hash schema
-  return { name, derived, schemaHash := hash, warnings := sig.warnings
-           statement := saveStatement name source hash derived.toJson.compress direct sig.warnings }
+      entries := declares
+      reached := Schema.sortStrings reached.eraseDups }
+  let hash := Schema.reachedHash derived.reached schema
+  return { name, derived, schemaHash := hash, generated := sig.text, warnings := sig.warnings
+           statement := saveStatement name source hash derived.toJson.compress direct sig.warnings sig.text }
 
 /-- `elpi_save`: the statements storing one checked module. -/
 def save (schema : Schema) (stored : List Stored) (name source : String) :
     Except String (List String × List String) := do
   let c ← check schema stored name source
   return ([c.statement], c.warnings)
+
+/-! ### Recheck -/
+
+/-- What `elpi_recheck` finds for one module. -/
+structure Recheck where
+  name : String
+  oldStatus : String
+  newStatus : String
+  error : String
+  schemaHash : String
+  generated : String
+  /-- New derived metadata when the module checks, else the stored one. -/
+  derived : String
+  deriving Repr, Inhabited
+
+/-- Regenerate and recheck one stored module against the current schema. A module whose
+stored hash differs from the recomputed one was `stale`. -/
+def recheckOne (schema : Schema) (stored : List Stored) (m : Stored) : Recheck :=
+  let oldHash := Schema.reachedHash (Derived.ofStored m).reached schema
+  let old := if m.status == "ok" && m.schemaHash != oldHash then "stale"
+    else if m.status.isEmpty then "ok" else m.status
+  match check schema stored m.name m.source with
+  | .ok c => { name := m.name, oldStatus := old, newStatus := "ok", error := "", schemaHash := c.schemaHash
+               generated := c.generated, derived := c.derived.toJson.compress }
+  | .error e =>
+    let gen := match Signature.ofSchema (Engine.reservedNames.contains ·) schema with
+      | .ok sig => sig.text
+      | .error _ => ""
+    { name := m.name, oldStatus := old, newStatus := "broken", error := e, schemaHash := oldHash
+      generated := gen, derived := m.derived }
+
+/-- `elpi_recheck`: one statement that persists the hash, generated signature, status and error
+of every listed module (all modules, by name, when `names` is `none`) and returns the report
+`(module, old_status, new_status, error)`; being one statement, it updates every row or none. -/
+-- @tg: implements:: [[openspec:schema-evolution#Explicit recheck]]
+-- @tg: implements:: [[openspec:schema-evolution#Broken module status]]
+def recheck (schema : Schema) (stored : List Stored) (names : Option (List String)) :
+    Except String (List String) := do
+  let targets := names.getD (Schema.sortStrings (stored.map (·.name)))
+  let mods ← targets.mapM fun n => match stored.find? (·.name == n) with
+    | some m => pure m
+    | none => throw s!"no module named {n}"
+  let rows := mods.map (recheckOne schema stored)
+  if rows.isEmpty then
+    return ["UNWIND CAST([] AS STRING[]) AS x RETURN x AS module, x AS old_status, x AS new_status, x AS error"]
+  let q := Literal.quote
+  let lit (r : Recheck) : String :=
+    s!"\{name: {q r.name}, old: {q r.oldStatus}, new: {q r.newStatus}, err: {q r.error}, " ++
+    s!"hash: {q r.schemaHash}, gen: {q r.generated}, derived: {q r.derived}}"
+  return [s!"UNWIND [{", ".intercalate (rows.map lit)}] AS r " ++
+    "MATCH (m:_elpi_module {name: r.name}) " ++
+    "SET m.schema_hash = r.hash, m.generated = r.gen, m.status = r.new, m.error = r.err, m.derived = r.derived " ++
+    "RETURN r.name AS module, r.old AS old_status, r.new AS new_status, r.err AS error"]
 
 /-! ### Drop, export and import -/
 

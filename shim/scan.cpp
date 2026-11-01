@@ -37,8 +37,6 @@ using namespace lbug::common;
 
 namespace marien {
 
-namespace {
-
 // Append a database value to a column for Lean. DATE becomes days and TIMESTAMP microseconds
 // since 1970-01-01 UTC; integers keep their exact value at any width.
 void pushValue(marien_values* out, const Value& v) {
@@ -94,6 +92,8 @@ void pushValue(marien_values* out, const Value& v) {
         marien_bridge_push_null(out);
     }
 }
+
+namespace {
 
 // Scan the visible rows of a node table in the caller's transaction, a vector at a time:
 // `onBatch(offsets, columns)` gets each row's offset and its values, one vector per column.
@@ -281,7 +281,11 @@ std::string storedModulesJson(main::ClientContext& ctx) {
     auto* e = nodeEntry(ctx, "_elpi_module");
     std::string out = "[";
     bool first = true;
-    scanNodes(ctx, *e, {"name", "version", "source", "derived"}, [] {},
+    // a table made by the tracer bullet has no error column until elpi_init runs again
+    std::vector<std::string> cols{"name", "version", "source", "derived", "schema_hash", "status"};
+    bool hasError = e->containsProperty("error");
+    if (hasError) cols.push_back("error");
+    scanNodes(ctx, *e, cols, [] {},
         [&](const std::vector<offset_t>&, const std::vector<std::vector<Value>>& cols) {
             for (size_t i = 0; i < cols[0].size(); i++) {
                 auto str = [&](size_t c) { return cols[c][i].isNull() ? std::string() : cols[c][i].getValue<std::string>(); };
@@ -289,7 +293,9 @@ std::string storedModulesJson(main::ClientContext& ctx) {
                 if (!first) out += ", ";
                 first = false;
                 out += "{\"name\": " + jsonString(str(0)) + ", \"version\": " + std::to_string(version) +
-                       ", \"source\": " + jsonString(str(2)) + ", \"derived\": " + jsonString(str(3)) + "}";
+                       ", \"source\": " + jsonString(str(2)) + ", \"derived\": " + jsonString(str(3)) +
+                       ", \"schema_hash\": " + jsonString(str(4)) + ", \"status\": " + jsonString(str(5)) +
+                       ", \"error\": " + jsonString(hasError ? str(6) : std::string()) + "}";
             }
         });
     return out + "]";

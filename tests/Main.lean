@@ -1,11 +1,12 @@
 import EngineContract
 import M1
+import M2
 
-/-! # Test driver: the engine contract and the M1 unit tests (`lake test`). -/
+/-! # Test driver: the engine contract and the M1 and M2 unit tests (`lake test`). -/
 
 def main : IO UInt32 := do
   let suites : List (String × List (String × IO Unit)) :=
-    [("engine contract", EngineContract.all), ("M1", M1.all)]
+    [("engine contract", EngineContract.all), ("M1", M1.all), ("M2", M2.all)]
   let mut failed := 0
   let mut total := 0
   for (suite, tests) in suites do

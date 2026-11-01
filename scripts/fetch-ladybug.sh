@@ -10,9 +10,18 @@ if [ ! -d .deps/ladybug/.git ]; then
   git clone -q --depth 1 --branch "v$VER" https://github.com/LadybugDB/ladybug .deps/ladybug
 fi
 if [ ! -f .deps/ladybug/build/release/src/include/common/system_config.h ]; then
-  if [ "$(uname -s)" = Darwin ]; then CC=/usr/bin/clang CXX=/usr/bin/clang++; else CC=gcc CXX=g++; fi
+  # LadybugDB's CMake refuses OpenSSL 4 (Homebrew's default `openssl` since 2026): point it at
+  # Homebrew's openssl@3 on macOS.
+  SSL=()
+  if [ "$(uname -s)" = Darwin ]; then
+    CC=/usr/bin/clang CXX=/usr/bin/clang++
+    OSSL="$(brew --prefix openssl@3 2>/dev/null || true)"
+    [ -d "$OSSL" ] && SSL=(-DOPENSSL_ROOT_DIR="$OSSL")
+  else
+    CC=gcc CXX=g++
+  fi
   cmake -S .deps/ladybug -B .deps/ladybug/build/release -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" >/dev/null
+    -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" ${SSL[@]+"${SSL[@]}"} >/dev/null
 fi
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) PLAT=osx-arm64 ;; Darwin-x86_64) PLAT=osx-x86_64 ;;

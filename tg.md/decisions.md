@@ -360,3 +360,77 @@ Record: `openspec/changes/add-tracer-bullet/design.md`.
 - status:: accepted
 - motivated_by:: [[decisions#Typed entry points and an untyped debug query]] {weight: primary}
 - motivated_by:: [[decisions#Materialize facts per call]]
+
+## Columns of typed entry points come from the predicate signature
+
+`elpi_run` reads the predicate's modes and argument types when it is bound: argument `k` is parameter `ink` when its mode is `i` and output column `outk` when it is `o`, typed by the value codec's column map.
+
+**Context.** Columns are fixed before solving, and only a `pred` declaration carries modes (a `type … -> prop` defaults every argument to `o`). **Consequences.** A predicate declared with `type` only is rejected, as is an argument without a column mapping. Node kinds become their table's primary-key type, edge kinds the internal id. Cells cross to the shim as typed prefix tokens and are never printed. `value_roundtrip` and `decodeC_sound` prove the column codec.
+
+Record: `openspec/changes/add-typed-validation/design.md`.
+
+- status:: accepted
+- motivated_by:: [[decisions#Typed entry points and an untyped debug query]] {weight: primary}
+- motivated_by:: [[constraints#Output columns are fixed at bind time]]
+- motivated_by:: [[decisions#Proofs where practical]]
+
+## Subject as a generated union kind
+
+Every signature declares `kind subject type.` with one constructor `subj_<table>` per node and rel table, plus `severity` with `error`, `warning` and `info`. A violation's subject decodes to the table label and the key.
+
+**Context.** A string subject loses typing in rules; one `violation_<table>` per table loses the single entry point. **Consequences.** The protocol's names join the injective-naming check, so a table called `Subject` is refused rather than shadowing the kind. `subject_decode_encode` and `subject_encode_decode` prove the codec, given unique constructors and labels.
+
+Record: `openspec/changes/add-typed-validation/design.md`.
+
+- status:: accepted
+- motivated_by:: [[decisions#Validation protocol]] {weight: primary}
+
+## A module reaches what its accumulated modules reach
+
+A module reaches the tables whose generated identifiers its clauses or declarations mention, plus what every module it accumulates reaches, read from their stored metadata.
+
+Called generated predicates are collected the same way.
+
+**Context.** The engine's clause view holds the module's own clauses, not those of accumulated libraries. **Consequences.** The reached-table hash covers a library's tables too, and a run loads the facts an accumulated module's clauses need (M1 missed them). A module saved before reached tables were recorded is hashed over the whole schema.
+
+Record: `openspec/changes/add-typed-validation/design.md`.
+
+- status:: accepted
+- motivated_by:: [[decisions#Lazy recheck by schema hash]] {weight: primary}
+
+## Runs recompile in memory; only elpi_recheck writes
+
+A run compares the module's reached-table hash with the cache key; a new hash compiles the module afresh in memory, and a failure fails the run. `elpi_recheck` alone persists hash, signature, status and error, in one rewritten statement.
+
+**Context.** A `CALL` in a read query cannot write, and there is no DDL hook. **Consequences.** No run ever uses an older compilation after the schema changed. `stale` exists only as `elpi_recheck`'s old status; `broken` is stored with its error, and saving the module clears it.
+
+Record: `openspec/changes/add-typed-validation/design.md`.
+
+- status:: accepted
+- motivated_by:: [[decisions#Read-only runs]] {weight: primary}
+- motivated_by:: [[constraints#Table functions can rewrite into Cypher]]
+- motivated_by:: [[constraints#No DDL hooks for extensions]]
+
+## Version check by release, else by storage version
+
+On load the extension compares the running LadybugDB's release with the pinned one through `Version::getVersion`, looked up at run time. When the host does not export it, the host's storage version must equal the pinned release's.
+
+**Context.** liblbug exports the release version; the CLI does not, and an undefined symbol would make the library fail to load with a linker message. **Consequences.** In applications on liblbug a mismatch is refused exactly; in the CLI only across storage versions, so a patch release of the same storage version is not told apart.
+
+Record: `openspec/changes/add-typed-validation/design.md`.
+
+- status:: accepted
+- motivated_by:: [[constraints#The CLI does not export the release version]] {weight: primary}
+- motivated_by:: [[constraints#Extensions are C++ shared libraries]]
+
+## Releases built from one matrix script
+
+`scripts/release-matrix.sh` lists the supported LadybugDB versions, OSes and CPUs; the release workflow builds and tests each entry, names its artifact after all three, and publishes only when every entry passed.
+
+**Context.** One build per LadybugDB version, OS and CPU is the only way an extension loads. **Consequences.** Adding a LadybugDB version is a one-line change; `scripts/check-release-workflow.sh` checks the shape on every push. The macOS x86_64 and Linux x86_64 entries run first at the next tag.
+
+Record: `openspec/changes/add-typed-validation/design.md`.
+
+- status:: accepted
+- motivated_by:: [[decisions#Out-of-tree extension with its own repository]] {weight: primary}
+- motivated_by:: [[constraints#Extensions are C++ shared libraries]]

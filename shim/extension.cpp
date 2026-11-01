@@ -2,11 +2,17 @@
 // It owns no logic beyond marshalling: every check and every statement comes from Lean through
 // lean_bridge.h.
 //
-// Writes (elpi_init, elpi_save, elpi_drop, elpi_import) do all checking at bind time and return
-// Cypher through rewriteFunc, so they run in the caller's transaction or not at all. LadybugDB
-// only rewrites a bare `CALL f(...)`, and only with literal arguments.
+// Writes (elpi_init, elpi_save, elpi_drop, elpi_import, elpi_recheck) do all checking at bind
+// time and return Cypher through rewriteFunc, so they run in the caller's transaction or not at
+// all. LadybugDB only rewrites a bare `CALL f(...)`, and only with literal arguments.
+//
+// Reads that solve (elpi_query, elpi_run, elpi_validate) materialize the facts and run the goal
+// in fuel slices on their first call, then hand out the buffered rows.
 #include <chrono>
+#include <dlfcn.h>
 #include <cstdlib>
+#include <cstring>
+#include <limits>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -15,6 +21,11 @@
 #include "binder/binder.h"
 #include "common/exception/interrupt.h"
 #include "common/exception/runtime.h"
+#include "common/types/date_t.h"
+#include "common/types/int128_t.h"
+#include "common/types/timestamp_t.h"
+#include "common/types/uint128_t.h"
+#include "common/types/value/nested.h"
 #include "extension/extension.h"
 #include "function/table/bind_data.h"
 #include "function/table/bind_input.h"
@@ -22,6 +33,7 @@
 #include "function/table/table_function.h"
 #include "main/client_context.h"
 #include "main/database.h"
+#include "storage/storage_version_info.h"
 #include "processor/execution_context.h"
 #include "transaction/transaction_context.h"
 
@@ -80,6 +92,30 @@ std::string literal(const TableFuncBindInput* input, idx_t i, const char* fn) {
         throw RuntimeException(std::string(fn) +
                                ": arguments must be string literals (parameters are not supported)");
     }
+}
+
+// The strings of a LIST(STRING) literal argument.
+std::vector<std::string> stringList(const TableFuncBindInput* input, idx_t i, const char* fn) {
+    auto v = input->getValue(i);
+    auto id = v.getDataType().getLogicalTypeID();
+    if (v.isNull() || (id != LogicalTypeID::LIST && id != LogicalTypeID::ARRAY)) {
+        throw RuntimeException(std::string(fn) + ": the module list must be a list literal such as ['org', 'hr']");
+    }
+    std::vector<std::string> out;
+    for (uint32_t k = 0; k < NestedVal::getChildrenSize(&v); k++) {
+        auto* c = NestedVal::getChildVal(&v, k);
+        if (c->isNull() || c->getDataType().getLogicalTypeID() != LogicalTypeID::STRING) {
+            throw RuntimeException(std::string(fn) + ": module names must be strings");
+        }
+        out.push_back(c->getValue<std::string>());
+    }
+    return out;
+}
+
+std::vector<const char*> cstrs(const std::vector<std::string>& v) {
+    std::vector<const char*> out;
+    for (auto& x : v) out.push_back(x.c_str());
+    return out;
 }
 
 offset_t mustBeStandalone(const TableFuncInput&, TableFuncOutput&) {
@@ -183,6 +219,31 @@ struct ElpiImport {
                     marien_bridge_import(catalog.c_str(), stored.c_str(), bundle.data(), bundle.size()),
                     "elpi_import"));
             }));
+        return set;
+    }
+};
+
+// @tg: implements:: [[openspec:schema-evolution#Explicit recheck]]
+struct ElpiRecheck {
+    static constexpr const char* name = "ELPI_RECHECK";
+    static std::unique_ptr<TableFuncBindData> bind(const ClientContext* c, const std::vector<std::string>& names,
+        bool all) {
+        auto& ctx = const_cast<ClientContext&>(*c);
+        auto stored = storedModulesJson(ctx);
+        auto catalog = catalogJson(ctx);
+        auto ptrs = cstrs(names);
+        return std::make_unique<StatementsBindData>(takeStrings(
+            marien_bridge_recheck(catalog.c_str(), stored.c_str(), ptrs.data(), ptrs.size(), all ? 1 : 0),
+            "elpi_recheck"));
+    }
+    static function_set getFunctionSet() {
+        function_set set;
+        set.push_back(writeFunction(name, {}, [](const ClientContext* c, const TableFuncBindInput*) {
+            return bind(c, {}, true);
+        }));
+        set.push_back(writeFunction(name, {LogicalTypeID::ANY}, [](const ClientContext* c, const TableFuncBindInput* in) {
+            return bind(c, stringList(in, 0, "elpi_recheck"), false);
+        }));
         return set;
     }
 };
@@ -312,19 +373,76 @@ std::shared_ptr<TableFuncSharedState> queryInitShared(const TableFuncInitSharedS
     return std::make_shared<QuerySharedState>();
 }
 
-// Run the whole query: materialize, then solve in slices, checking LadybugDB's interrupt flag
-// and the elpi_timeout_ms deadline between slices.
-// @tg: implements:: [[openspec:rule-execution#Untyped debug query]]
-// @tg: implements:: [[openspec:rule-execution#Fuel-sliced execution]]
-void runQuery(ClientContext& ctx, const QueryBindData& bd, QuerySharedState& st) {
+// Throws when the query was interrupted or the elpi_timeout_ms deadline (from now) has passed.
+std::function<void()> interruptCheck(ClientContext& ctx) {
     auto timeout = setting(ctx, "elpi_timeout_ms");
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout);
-    auto check = [&] {
+    return [&ctx, timeout, deadline] {
         if (ctx.interrupted()) throw InterruptException{};
         if (timeout > 0 && std::chrono::steady_clock::now() >= deadline) {
             throw RuntimeException("marien: elpi_timeout_ms (" + std::to_string(timeout) + ") exceeded");
         }
     };
+}
+
+// Materialize the session's tables (consuming the session) and start its typed goal.
+marien_run* startTyped(ClientContext& ctx, marien_session* s, const std::function<void()>& check,
+    const std::string& fn) {
+    try {
+        materialize(ctx, s, check);
+    } catch (...) {
+        marien_bridge_free_session(s);
+        throw;
+    }
+    marien_str err{nullptr, 0};
+    marien_run* r = marien_bridge_goal_start(s, setting(ctx, "elpi_fuel"), setting(ctx, "elpi_slice_steps"),
+        setting(ctx, "elpi_max_solutions"), &err);
+    if (!r) throw RuntimeException(fn + ": " + takeString(err));
+    return r;
+}
+
+// Solve to the end in slices, checking the interrupt flag and the deadline between slices;
+// `onSolution` gets each solution's items. Returns false when elpi_max_solutions stopped it.
+// @tg: implements:: [[openspec:rule-execution#Fuel-sliced execution]]
+bool solve(marien_run* r, const std::function<void()>& check,
+    const std::function<void(std::vector<std::string>&)>& onSolution, const std::string& fn) {
+    marien_str err{nullptr, 0};
+    bool exhausted = true;
+    while (r) {
+        try {
+            check();
+        } catch (...) {
+            marien_bridge_free_run(r);
+            throw;
+        }
+        marien_strings bs{{nullptr, 0}, 0, nullptr};
+        switch (marien_bridge_step(&r, &bs, &err)) {
+        case MARIEN_STEP_SOLUTION: {
+            std::vector<std::string> items;
+            for (size_t i = 0; i < bs.n; i++) items.emplace_back(bs.items[i].data, bs.items[i].len);
+            marien_bridge_free_strings(&bs);
+            try {
+                onSolution(items);
+            } catch (...) {
+                marien_bridge_free_run(r);
+                throw;
+            }
+            break;
+        }
+        case MARIEN_STEP_PAUSED: break;
+        case MARIEN_STEP_EXHAUSTED: exhausted = true; break;
+        case MARIEN_STEP_STOPPED: exhausted = false; break;
+        default: throw RuntimeException(fn + ": " + takeString(err));
+        }
+    }
+    return exhausted;
+}
+
+// Run the whole query: materialize, then solve in slices, checking LadybugDB's interrupt flag
+// and the elpi_timeout_ms deadline between slices.
+// @tg: implements:: [[openspec:rule-execution#Untyped debug query]]
+void runQuery(ClientContext& ctx, const QueryBindData& bd, QuerySharedState& st) {
+    auto check = interruptCheck(ctx);
     auto catalog = catalogJson(ctx);
     auto stored = storedModulesJson(ctx);
     marien_str err{nullptr, 0};
@@ -341,29 +459,15 @@ void runQuery(ClientContext& ctx, const QueryBindData& bd, QuerySharedState& st)
         setting(ctx, "elpi_slice_steps"), setting(ctx, "elpi_max_solutions"), &err);
     if (!r) throw RuntimeException("elpi_query: " + takeString(err));
     int64_t sol = 0;
-    while (r) {
-        try {
-            check();
-        } catch (...) {
-            marien_bridge_free_run(r);
-            throw;
-        }
-        marien_strings bs{{nullptr, 0}, 0, nullptr};
-        switch (marien_bridge_step(&r, &bs, &err)) {
-        case MARIEN_STEP_SOLUTION:
-            if (bs.n == 0) st.rows.push_back({sol, false, "", ""});
-            for (size_t i = 0; i + 1 < bs.n; i += 2) {
-                st.rows.push_back({sol, true, std::string(bs.items[i].data, bs.items[i].len),
-                    std::string(bs.items[i + 1].data, bs.items[i + 1].len)});
-            }
-            marien_bridge_free_strings(&bs);
+    try {
+        st.exhausted = solve(r, check, [&](std::vector<std::string>& items) {
+            if (items.empty()) st.rows.push_back({sol, false, "", ""});
+            for (size_t i = 0; i + 1 < items.size(); i += 2) st.rows.push_back({sol, true, items[i], items[i + 1]});
             sol++;
-            break;
-        case MARIEN_STEP_PAUSED: break;
-        case MARIEN_STEP_EXHAUSTED: st.exhausted = true; break;
-        case MARIEN_STEP_STOPPED: st.exhausted = false; break;
-        default: st.rows.clear(); throw RuntimeException("elpi_query: " + takeString(err));
-        }
+        }, "elpi_query");
+    } catch (...) {
+        st.rows.clear();
+        throw;
     }
 }
 
@@ -419,13 +523,437 @@ struct ElpiQuery {
     }
 };
 
+/* --- elpi_run ------------------------------------------------------------------------ */
+
+// A column type from its prefix tokens (Marien.Encoding.Codec.Col.ltyTokens).
+LogicalType parseType(const std::vector<std::string>& t, size_t& i) {
+    if (i >= t.size()) throw RuntimeException("elpi_run: truncated column type");
+    const auto& n = t[i++];
+    if (n == "LIST") return LogicalType::LIST(parseType(t, i));
+    if (n == "STRUCT") {
+        auto k = std::stoul(t.at(i++));
+        std::vector<StructField> fields;
+        for (size_t f = 0; f < k; f++) {
+            auto name = t.at(i++);
+            fields.emplace_back(name, parseType(t, i));
+        }
+        return LogicalType::STRUCT(std::move(fields));
+    }
+    if (n == "INT64" || n == "SERIAL") return LogicalType::INT64();
+    if (n == "INT32") return LogicalType::INT32();
+    if (n == "INT16") return LogicalType::INT16();
+    if (n == "INT8") return LogicalType::INT8();
+    if (n == "UINT64") return LogicalType::UINT64();
+    if (n == "UINT32") return LogicalType::UINT32();
+    if (n == "UINT16") return LogicalType::UINT16();
+    if (n == "UINT8") return LogicalType::UINT8();
+    if (n == "INT128") return LogicalType::INT128();
+    if (n == "UINT128") return LogicalType::UINT128();
+    if (n == "DOUBLE") return LogicalType::DOUBLE();
+    if (n == "FLOAT") return LogicalType::FLOAT();
+    if (n == "STRING") return LogicalType::STRING();
+    if (n == "BOOL") return LogicalType::BOOL();
+    if (n == "DATE") return LogicalType::DATE();
+    if (n == "TIMESTAMP") return LogicalType::TIMESTAMP();
+    throw RuntimeException("elpi_run: unknown column type " + n);
+}
+
+template<typename T>
+Value fitting(__int128 x, const std::string& col, const char* type) {
+    if (x < static_cast<__int128>(std::numeric_limits<T>::min()) ||
+        x > static_cast<__int128>(std::numeric_limits<T>::max())) {
+        throw RuntimeException("elpi_run: column " + col + ": the result does not fit " + type);
+    }
+    return Value(static_cast<T>(x));
+}
+
+// A cell from its tokens (Marien.Exec.cellTokens), as a value of `type`.
+Value parseCell(const LogicalType& type, const std::vector<std::string>& t, size_t& i, const std::string& col) {
+    if (i >= t.size()) throw RuntimeException("elpi_run: truncated row");
+    const auto& tok = t[i++];
+    if (tok == "n") return Value::createNullValue(type);
+    auto body = tok.substr(1);
+    switch (tok[0]) {
+    case 'i': {
+        bool neg = !body.empty() && body[0] == '-';
+        unsigned __int128 mag = 0;
+        for (size_t k = neg ? 1 : 0; k < body.size(); k++) {
+            auto next = mag * 10 + static_cast<unsigned>(body[k] - '0');
+            if (next / 10 != mag) throw RuntimeException("elpi_run: column " + col + ": the result does not fit 128 bits");
+            mag = next;
+        }
+        if (type.getLogicalTypeID() == LogicalTypeID::UINT128) {
+            if (neg && mag != 0) throw RuntimeException("elpi_run: column " + col + ": the result does not fit UINT128");
+            uint128_t u;
+            u.low = static_cast<uint64_t>(mag);
+            u.high = static_cast<uint64_t>(mag >> 64);
+            return Value(u);
+        }
+        if (mag > static_cast<unsigned __int128>(std::numeric_limits<__int128>::max()) + (neg ? 1 : 0)) {
+            throw RuntimeException("elpi_run: column " + col + ": the result does not fit 128 bits");
+        }
+        __int128 x = neg ? -static_cast<__int128>(mag - 1) - 1 : static_cast<__int128>(mag);
+        switch (type.getLogicalTypeID()) {
+        case LogicalTypeID::INT64: return fitting<int64_t>(x, col, "INT64");
+        case LogicalTypeID::INT32: return fitting<int32_t>(x, col, "INT32");
+        case LogicalTypeID::INT16: return fitting<int16_t>(x, col, "INT16");
+        case LogicalTypeID::INT8: return fitting<int8_t>(x, col, "INT8");
+        case LogicalTypeID::UINT64: return fitting<uint64_t>(x, col, "UINT64");
+        case LogicalTypeID::UINT32: return fitting<uint32_t>(x, col, "UINT32");
+        case LogicalTypeID::UINT16: return fitting<uint16_t>(x, col, "UINT16");
+        case LogicalTypeID::UINT8: return fitting<uint8_t>(x, col, "UINT8");
+        case LogicalTypeID::INT128: return Value(int128_t(static_cast<uint64_t>(x), static_cast<int64_t>(x >> 64)));
+        case LogicalTypeID::DATE: return Value(date_t(fitting<int32_t>(x, col, "DATE").getValue<int32_t>()));
+        case LogicalTypeID::TIMESTAMP: return Value(timestamp_t(fitting<int64_t>(x, col, "TIMESTAMP").getValue<int64_t>()));
+        default: break;
+        }
+        break;
+    }
+    case 'f': {
+        uint64_t bits = std::stoull(body);
+        double d;
+        std::memcpy(&d, &bits, sizeof d);
+        if (type.getLogicalTypeID() == LogicalTypeID::FLOAT) return Value(static_cast<float>(d));
+        return Value(d);
+    }
+    case 's': return Value(LogicalType::STRING(), body);
+    case 'b': return Value(body == "1");
+    case 'l': {
+        auto n = std::stoul(body);
+        std::vector<std::unique_ptr<Value>> items;
+        for (size_t k = 0; k < n; k++) {
+            items.push_back(std::make_unique<Value>(parseCell(ListType::getChildType(type), t, i, col)));
+        }
+        return Value(type.copy(), std::move(items));
+    }
+    case 't': {
+        auto n = std::stoul(body);
+        auto types = StructType::getFieldTypes(type);
+        if (types.size() != n) throw RuntimeException("elpi_run: column " + col + ": wrong number of struct fields");
+        std::vector<std::unique_ptr<Value>> fields;
+        for (size_t k = 0; k < n; k++) fields.push_back(std::make_unique<Value>(parseCell(*types[k], t, i, col)));
+        return Value(type.copy(), std::move(fields));
+    }
+    default: break;
+    }
+    throw RuntimeException("elpi_run: column " + col + ": a cell does not fit its type");
+}
+
+// Parameter names and values from a STRUCT ({in1: 7}) or MAP (map(['in1'], [7])) literal.
+void readParams(const Value& v, std::vector<std::string>& names, marien_values* values) {
+    auto& type = v.getDataType();
+    switch (type.getLogicalTypeID()) {
+    case LogicalTypeID::STRUCT: {
+        auto fieldNames = StructType::getFieldNames(type);
+        for (size_t k = 0; k < fieldNames.size(); k++) {
+            names.push_back(fieldNames[k]);
+            pushValue(values, *NestedVal::getChildVal(&v, k));
+        }
+        return;
+    }
+    case LogicalTypeID::MAP: {
+        for (uint32_t k = 0; k < NestedVal::getChildrenSize(&v); k++) {
+            auto* entry = NestedVal::getChildVal(&v, k);
+            auto* key = NestedVal::getChildVal(entry, 0);
+            if (key->isNull() || key->getDataType().getLogicalTypeID() != LogicalTypeID::STRING) {
+                throw RuntimeException("elpi_run: parameter names must be strings");
+            }
+            names.push_back(key->getValue<std::string>());
+            pushValue(values, *NestedVal::getChildVal(entry, 1));
+        }
+        return;
+    }
+    default:
+        throw RuntimeException("elpi_run: parameters must be a struct or map literal such as {in1: 7}");
+    }
+}
+
+struct RunBindData final : TableFuncBindData {
+    std::string module, pred;
+    std::vector<std::string> paramNames;
+    std::vector<Value> paramValues;
+    std::vector<LogicalType> types;
+    std::vector<std::string> names;
+    RunBindData(lbug::binder::expression_vector cols, std::string m, std::string p, std::vector<std::string> pn,
+        std::vector<Value> pv, std::vector<LogicalType> ts, std::vector<std::string> ns)
+        : TableFuncBindData{std::move(cols)}, module{std::move(m)}, pred{std::move(p)}, paramNames{std::move(pn)},
+          paramValues{std::move(pv)}, types{std::move(ts)}, names{std::move(ns)} {}
+    std::unique_ptr<TableFuncBindData> copy() const override {
+        return std::make_unique<RunBindData>(columns, module, pred, paramNames, paramValues, LogicalType::copy(types),
+            names);
+    }
+};
+
+struct RowsSharedState final : TableFuncSharedState {
+    bool computed = false;
+    std::vector<std::vector<Value>> rows;
+    size_t cursor = 0;
+    void resetState() override {
+        std::lock_guard l{mtx};
+        computed = false;
+        rows.clear();
+        cursor = 0;
+    }
+};
+
+std::shared_ptr<TableFuncSharedState> rowsInitShared(const TableFuncInitSharedStateInput&) {
+    return std::make_shared<RowsSharedState>();
+}
+
+// A session for the call; the parameters are converted afresh each time.
+marien_session* runSession(ClientContext& ctx, const std::string& module, const std::string& pred,
+    const std::vector<std::string>& names, const std::vector<Value>& values) {
+    auto catalog = catalogJson(ctx);
+    auto stored = storedModulesJson(ctx);
+    auto* vals = marien_bridge_values_new(values.size());
+    for (auto& v : values) pushValue(vals, v);
+    auto ptrs = cstrs(names);
+    marien_str err{nullptr, 0};
+    marien_session* s = marien_bridge_run_prepare(catalog.c_str(), stored.c_str(), module.c_str(), pred.c_str(),
+        ptrs.data(), vals, setting(ctx, "elpi_max_facts"), setting(ctx, "elpi_cache_size"), &err);
+    if (!s) throw RuntimeException("elpi_run: " + takeString(err));
+    return s;
+}
+
+// Output columns are fixed here, from the predicate's signature, before anything is solved.
+// @tg: implements:: [[openspec:rule-execution#Typed entry points]]
+std::unique_ptr<TableFuncBindData> runBind(const ClientContext* c, const TableFuncBindInput* in, bool withParams) {
+    auto& ctx = const_cast<ClientContext&>(*c);
+    auto module = literal(in, 0, "elpi_run");
+    auto pred = literal(in, 1, "elpi_run");
+    std::vector<std::string> paramNames;
+    std::vector<Value> paramValues;
+    if (withParams) {
+        auto p = in->getValue(2);
+        auto* scratch = marien_bridge_values_new(0);
+        try {
+            readParams(p, paramNames, scratch);
+        } catch (...) {
+            marien_bridge_free_values(scratch);
+            throw;
+        }
+        marien_bridge_free_values(scratch);
+        if (p.getDataType().getLogicalTypeID() == LogicalTypeID::STRUCT) {
+            for (uint32_t k = 0; k < NestedVal::getChildrenSize(&p); k++) paramValues.push_back(*NestedVal::getChildVal(&p, k));
+        } else {
+            for (uint32_t k = 0; k < NestedVal::getChildrenSize(&p); k++) {
+                paramValues.push_back(*NestedVal::getChildVal(NestedVal::getChildVal(&p, k), 1));
+            }
+        }
+    }
+    marien_session* s = runSession(ctx, module, pred, paramNames, paramValues);
+    std::vector<std::string> names;
+    std::vector<LogicalType> types;
+    for (size_t i = 0, n = marien_bridge_column_count(s); i < n; i++) {
+        auto toks = takeStrings(marien_bridge_column(s, i), "elpi_run");
+        size_t k = 1;
+        names.push_back(toks.at(0));
+        types.push_back(parseType(toks, k));
+    }
+    marien_bridge_free_session(s);
+    auto cols = columns(in, names, LogicalType::copy(types));
+    return std::make_unique<RunBindData>(std::move(cols), module, pred, std::move(paramNames), std::move(paramValues),
+        std::move(types), std::move(names));
+}
+
+offset_t runFunc(const TableFuncInput& input, TableFuncOutput& output) {
+    auto& st = *input.sharedState->ptrCast<RowsSharedState>();
+    auto& bd = *input.bindData->constPtrCast<RunBindData>();
+    std::lock_guard l{st.mtx};
+    if (!st.computed) {
+        st.computed = true;
+        auto& ctx = *input.context->clientContext;
+        auto check = interruptCheck(ctx);
+        marien_run* r = startTyped(ctx, runSession(ctx, bd.module, bd.pred, bd.paramNames, bd.paramValues), check,
+            "elpi_run");
+        try {
+            solve(r, check, [&](std::vector<std::string>& cells) {
+                std::vector<Value> row;
+                size_t k = 0;
+                for (size_t c = 0; c < bd.types.size(); c++) row.push_back(parseCell(bd.types[c], cells, k, bd.names[c]));
+                st.rows.push_back(std::move(row));
+            }, "elpi_run");
+        } catch (...) {
+            st.rows.clear();
+            throw;
+        }
+    }
+    auto n = std::min<size_t>(DEFAULT_VECTOR_CAPACITY, st.rows.size() - st.cursor);
+    for (size_t i = 0; i < n; i++) {
+        auto& row = st.rows[st.cursor + i];
+        for (size_t c = 0; c < row.size(); c++) output.dataChunk.getValueVectorMutable(c).copyFromValue(i, row[c]);
+    }
+    st.cursor += n;
+    return n;
+}
+
+struct ElpiRun {
+    static constexpr const char* name = "ELPI_RUN";
+    static std::unique_ptr<TableFunction> make(std::vector<LogicalTypeID> args, table_func_bind_t bind) {
+        auto f = std::make_unique<TableFunction>(name, std::move(args));
+        f->bindFunc = std::move(bind);
+        f->tableFunc = runFunc;
+        f->initSharedStateFunc = rowsInitShared;
+        f->initLocalStateFunc = TableFunction::initEmptyLocalState;
+        f->canParallelFunc = [] { return false; };
+        return f;
+    }
+    static function_set getFunctionSet() {
+        function_set set;
+        set.push_back(make({LogicalTypeID::STRING, LogicalTypeID::STRING},
+            [](const ClientContext* c, const TableFuncBindInput* in) { return runBind(c, in, false); }));
+        set.push_back(make({LogicalTypeID::STRING, LogicalTypeID::STRING, LogicalTypeID::ANY},
+            [](const ClientContext* c, const TableFuncBindInput* in) { return runBind(c, in, true); }));
+        return set;
+    }
+};
+
+/* --- elpi_validate ------------------------------------------------------------------- */
+
+struct ValidateBindData final : TableFuncBindData {
+    std::vector<std::string> modules;
+    bool all;
+    std::string minSeverity;
+    ValidateBindData(lbug::binder::expression_vector cols, std::vector<std::string> m, bool a, std::string s)
+        : TableFuncBindData{std::move(cols)}, modules{std::move(m)}, all{a}, minSeverity{std::move(s)} {}
+    std::unique_ptr<TableFuncBindData> copy() const override { return std::make_unique<ValidateBindData>(*this); }
+};
+
+std::unique_ptr<TableFuncBindData> validateBind(const TableFuncBindInput* in, std::vector<std::string> modules,
+    bool all, std::string minSeverity) {
+    std::vector<LogicalType> types;
+    types.push_back(LogicalType::STRING());
+    types.push_back(LogicalType::INT64());
+    for (int i = 0; i < 5; i++) types.push_back(LogicalType::STRING());
+    return std::make_unique<ValidateBindData>(
+        columns(in, {"module", "version", "severity", "code", "message", "subject_label", "subject_pk"}, std::move(types)),
+        std::move(modules), all, std::move(minSeverity));
+}
+
+// Every module runs to the end before any row is returned: a module that fails fails the call,
+// so a report is never partial.
+// @tg: implements:: [[openspec:validation#Uniform validation report]]
+offset_t validateFunc(const TableFuncInput& input, TableFuncOutput& output) {
+    auto& st = *input.sharedState->ptrCast<RowsSharedState>();
+    auto& bd = *input.bindData->constPtrCast<ValidateBindData>();
+    std::lock_guard l{st.mtx};
+    if (!st.computed) {
+        st.computed = true;
+        auto& ctx = *input.context->clientContext;
+        auto check = interruptCheck(ctx);
+        auto catalog = catalogJson(ctx);
+        auto stored = storedModulesJson(ctx);
+        auto ptrs = cstrs(bd.modules);
+        auto order = takeStrings(marien_bridge_validate_order(stored.c_str(), ptrs.data(), ptrs.size(), bd.all ? 1 : 0),
+            "elpi_validate");
+        try {
+            for (auto& m : order) {
+                auto fn = "elpi_validate: module " + m;
+                marien_str err{nullptr, 0};
+                marien_session* s = marien_bridge_validate_prepare(catalog.c_str(), stored.c_str(), m.c_str(),
+                    bd.minSeverity.c_str(), setting(ctx, "elpi_max_facts"), setting(ctx, "elpi_cache_size"), &err);
+                if (!s) throw RuntimeException(fn + ": " + takeString(err));
+                marien_run* r;
+                try {
+                    r = startTyped(ctx, s, check, fn);
+                } catch (RuntimeException& e) {
+                    // a materialization error does not carry the module name yet
+                    std::string msg = e.what();
+                    if (msg.find(fn) == std::string::npos) throw RuntimeException(fn + ": " + msg);
+                    throw;
+                }
+                solve(r, check, [&](std::vector<std::string>& row) {
+                    std::vector<Value> out;
+                    out.emplace_back(LogicalType::STRING(), row.at(0));
+                    out.emplace_back(static_cast<int64_t>(std::stoll(row.at(1))));
+                    for (size_t c = 2; c < 7; c++) out.emplace_back(LogicalType::STRING(), row.at(c));
+                    st.rows.push_back(std::move(out));
+                }, fn);
+            }
+        } catch (...) {
+            st.rows.clear();
+            throw;
+        }
+    }
+    auto n = std::min<size_t>(DEFAULT_VECTOR_CAPACITY, st.rows.size() - st.cursor);
+    for (size_t i = 0; i < n; i++) {
+        auto& row = st.rows[st.cursor + i];
+        for (size_t c = 0; c < row.size(); c++) output.dataChunk.getValueVectorMutable(c).copyFromValue(i, row[c]);
+    }
+    st.cursor += n;
+    return n;
+}
+
+struct ElpiValidate {
+    static constexpr const char* name = "ELPI_VALIDATE";
+    static std::unique_ptr<TableFunction> make(std::vector<LogicalTypeID> args, table_func_bind_t bind) {
+        auto f = std::make_unique<TableFunction>(name, std::move(args));
+        f->bindFunc = std::move(bind);
+        f->tableFunc = validateFunc;
+        f->initSharedStateFunc = rowsInitShared;
+        f->initLocalStateFunc = TableFunction::initEmptyLocalState;
+        f->canParallelFunc = [] { return false; };
+        return f;
+    }
+    static function_set getFunctionSet() {
+        function_set set;
+        set.push_back(make({}, [](const ClientContext*, const TableFuncBindInput* in) {
+            return validateBind(in, {}, true, "info");
+        }));
+        set.push_back(make({LogicalTypeID::ANY}, [](const ClientContext*, const TableFuncBindInput* in) {
+            return validateBind(in, stringList(in, 0, "elpi_validate"), false, "info");
+        }));
+        set.push_back(make({LogicalTypeID::ANY, LogicalTypeID::STRING}, [](const ClientContext*, const TableFuncBindInput* in) {
+            return validateBind(in, stringList(in, 0, "elpi_validate"), false, literal(in, 1, "elpi_validate"));
+        }));
+        return set;
+    }
+};
+
+/* --- Version check -------------------------------------------------------------------- */
+
+// An extension only works in the LadybugDB release whose headers it was compiled against. The
+// release version is read through liblbug's Version::getVersion when the host exports it; the
+// CLI does not, and then the host's storage version must be the pinned release's. Symbols are
+// looked up at run time so that a host without them can still load the library and refuse it.
+void checkVersion() {
+    const std::string pinned = MARIEN_LADYBUG_VERSION;
+    auto refuse = [&](const std::string& running) {
+        throw RuntimeException("marien: this build is for LadybugDB " + pinned +
+                               " and cannot be loaded into LadybugDB " + running);
+    };
+    using version_fn = const char* (*)();
+    if (auto f = reinterpret_cast<version_fn>(dlsym(RTLD_DEFAULT, "_ZN4lbug4main7Version10getVersionEv"))) {
+        std::string running = f();
+        if (running != pinned) refuse(running);
+        return;
+    }
+    using storage_fn = uint64_t (*)();
+    auto g = reinterpret_cast<storage_fn>(dlsym(RTLD_DEFAULT, "_ZN4lbug7storage18StorageVersionInfo17getStorageVersionEv"));
+    auto known = lbug::storage::StorageVersionInfo::getStorageVersionInfo();
+    auto it = known.find(pinned);
+    if (!g || it == known.end()) {
+        throw RuntimeException("marien: cannot tell which LadybugDB version this is; this build is for LadybugDB " + pinned);
+    }
+    auto running = g();
+    if (running != it->second) {
+        std::string names;
+        for (auto& [v, sv] : known) {
+            if (sv == running) names += (names.empty() ? "" : " or ") + v;
+        }
+        refuse(names.empty() ? "with storage version " + std::to_string(running) : names);
+    }
+}
+
 } // namespace
 } // namespace marien
 
 extern "C" {
 
 // @tg: implements:: [[openspec:extension-runtime#Extension init starts the runtime]]
+// @tg: implements:: [[openspec:distribution#LadybugDB version check]]
 __attribute__((visibility("default"))) void init(ClientContext* context) {
+    marien::checkVersion();
     if (const char* err = marien_bridge_init()) {
         throw RuntimeException(std::string("marien: Lean initialization failed: ") + err);
     }
@@ -436,9 +964,12 @@ __attribute__((visibility("default"))) void init(ClientContext* context) {
     ExtensionUtils::addStandaloneTableFunc<marien::ElpiSave>(db);
     ExtensionUtils::addStandaloneTableFunc<marien::ElpiDrop>(db);
     ExtensionUtils::addStandaloneTableFunc<marien::ElpiImport>(db);
+    ExtensionUtils::addStandaloneTableFunc<marien::ElpiRecheck>(db);
     ExtensionUtils::addTableFunc<marien::ElpiExport>(db);
     ExtensionUtils::addTableFunc<marien::ElpiSignature>(db);
     ExtensionUtils::addTableFunc<marien::ElpiQuery>(db);
+    ExtensionUtils::addTableFunc<marien::ElpiRun>(db);
+    ExtensionUtils::addTableFunc<marien::ElpiValidate>(db);
 }
 
 __attribute__((visibility("default"))) const char* name() {

@@ -39,6 +39,14 @@ extern lean_object *marien_add_batch(lean_object *, size_t, lean_object *);
 extern lean_object *marien_query_start(lean_object *, lean_object *, uint64_t, uint64_t, uint64_t);
 extern lean_object *marien_query_step(lean_object *);
 extern lean_object *marien_cache_misses(lean_object *);
+extern lean_object *marien_recheck(lean_object *, lean_object *, lean_object *, uint8_t);
+extern lean_object *marien_run_prepare(lean_object *, lean_object *, lean_object *, lean_object *,
+                                       lean_object *, lean_object *, uint64_t, uint64_t);
+extern lean_object *marien_session_columns(lean_object *);
+extern lean_object *marien_validate_order(lean_object *, lean_object *, uint8_t);
+extern lean_object *marien_validate_prepare(lean_object *, lean_object *, lean_object *, lean_object *,
+                                            uint64_t, uint64_t);
+extern lean_object *marien_goal_start(lean_object *, uint64_t, uint64_t, uint64_t);
 
 /* --- Runtime ------------------------------------------------------------------------- */
 
@@ -195,18 +203,31 @@ marien_strings marien_bridge_import(const char *catalog, const char *modules, co
     return take_strings(marien_import(mk_str(catalog), mk_str(modules), mk_str_n(bundle, bundle_len)));
 }
 
+static lean_object *mk_str_array(const char *const *names, size_t n) {
+    lean_object *arr = lean_mk_empty_array_with_capacity(lean_box(n));
+    for (size_t i = 0; i < n; i++) arr = lean_array_push(arr, mk_str(names[i]));
+    return arr;
+}
+
+marien_strings marien_bridge_recheck(const char *catalog, const char *modules, const char *const *names,
+                                     size_t n, int all) {
+    ensure_thread();
+    return take_strings(marien_recheck(mk_str(catalog), mk_str(modules), mk_str_array(names, n), all ? 1 : 0));
+}
+
+marien_strings marien_bridge_validate_order(const char *modules, const char *const *names, size_t n, int all) {
+    ensure_thread();
+    return take_strings(marien_validate_order(mk_str(modules), mk_str_array(names, n), all ? 1 : 0));
+}
+
 /* --- Queries ------------------------------------------------------------------------- */
 
 struct marien_session { lean_object *obj; };
 struct marien_run { lean_object *obj; };
 struct marien_values { lean_object *arr; };
 
-marien_session *marien_bridge_prepare(const char *catalog, const char *modules, const char *name,
-                                      const char *goal, uint64_t max_facts, uint64_t cache_size,
-                                      marien_str *error) {
-    ensure_thread();
-    lean_object *res = marien_query_prepare(mk_str(catalog), mk_str(modules), mk_str(name),
-                                            mk_str(goal), max_facts, cache_size);
+/* IO (Except String Session), consumed. */
+static marien_session *take_session(lean_object *res, marien_str *error) {
     if (!lean_io_result_is_ok(res)) {
         lean_dec(res);
         *error = c_err("marien: query preparation raised an IO error");
@@ -224,6 +245,54 @@ marien_session *marien_bridge_prepare(const char *catalog, const char *modules, 
     marien_session *s = malloc(sizeof *s);
     s->obj = v;
     return s;
+}
+
+marien_session *marien_bridge_prepare(const char *catalog, const char *modules, const char *name,
+                                      const char *goal, uint64_t max_facts, uint64_t cache_size,
+                                      marien_str *error) {
+    ensure_thread();
+    return take_session(marien_query_prepare(mk_str(catalog), mk_str(modules), mk_str(name),
+                                             mk_str(goal), max_facts, cache_size), error);
+}
+
+marien_session *marien_bridge_run_prepare(const char *catalog, const char *modules, const char *name,
+                                          const char *pred, const char *const *param_names,
+                                          marien_values *param_values, uint64_t max_facts,
+                                          uint64_t cache_size, marien_str *error) {
+    ensure_thread();
+    lean_object *values = param_values->arr;
+    size_t n = lean_array_size(values);
+    free(param_values);
+    return take_session(marien_run_prepare(mk_str(catalog), mk_str(modules), mk_str(name), mk_str(pred),
+                                           mk_str_array(param_names, n), values, max_facts, cache_size),
+                        error);
+}
+
+marien_session *marien_bridge_validate_prepare(const char *catalog, const char *modules, const char *name,
+                                               const char *min_severity, uint64_t max_facts,
+                                               uint64_t cache_size, marien_str *error) {
+    ensure_thread();
+    return take_session(marien_validate_prepare(mk_str(catalog), mk_str(modules), mk_str(name),
+                                                mk_str(min_severity), max_facts, cache_size), error);
+}
+
+size_t marien_bridge_column_count(marien_session *s) {
+    ensure_thread();
+    lean_inc(s->obj);
+    lean_object *cols = marien_session_columns(s->obj);
+    size_t n = lean_array_size(cols);
+    lean_dec(cols);
+    return n;
+}
+
+marien_strings marien_bridge_column(marien_session *s, size_t i) {
+    ensure_thread();
+    lean_inc(s->obj);
+    lean_object *cols = marien_session_columns(s->obj);
+    lean_object *one = lean_array_get_core(cols, i);
+    lean_inc(one);
+    lean_dec(cols);
+    return array_strings(one);
 }
 
 size_t marien_bridge_scan_count(marien_session *s) {
@@ -304,11 +373,8 @@ marien_str marien_bridge_add_batch(marien_session **s, size_t scan, marien_value
     return none;
 }
 
-marien_run *marien_bridge_start(marien_session *s, const char *goal, uint64_t fuel,
-                                uint64_t slice_steps, uint64_t max_solutions, marien_str *error) {
-    ensure_thread();
-    lean_object *ex = marien_query_start(s->obj, mk_str(goal), fuel, slice_steps, max_solutions);
-    free(s);
+/* Except String Run, consumed. */
+static marien_run *take_run(lean_object *ex, marien_str *error) {
     lean_object *v = lean_ctor_get(ex, 0);
     if (lean_obj_tag(ex) == 0) {
         *error = take_str(v);
@@ -320,6 +386,22 @@ marien_run *marien_bridge_start(marien_session *s, const char *goal, uint64_t fu
     marien_run *r = malloc(sizeof *r);
     r->obj = v;
     return r;
+}
+
+marien_run *marien_bridge_start(marien_session *s, const char *goal, uint64_t fuel,
+                                uint64_t slice_steps, uint64_t max_solutions, marien_str *error) {
+    ensure_thread();
+    lean_object *ex = marien_query_start(s->obj, mk_str(goal), fuel, slice_steps, max_solutions);
+    free(s);
+    return take_run(ex, error);
+}
+
+marien_run *marien_bridge_goal_start(marien_session *s, uint64_t fuel, uint64_t slice_steps,
+                                     uint64_t max_solutions, marien_str *error) {
+    ensure_thread();
+    lean_object *ex = marien_goal_start(s->obj, fuel, slice_steps, max_solutions);
+    free(s);
+    return take_run(ex, error);
 }
 
 /* @tg: implements:: [[openspec:rule-execution#Fuel-sliced execution]] */

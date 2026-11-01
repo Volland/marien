@@ -58,12 +58,35 @@ marien_strings marien_bridge_export(const char *modules);
 marien_strings marien_bridge_import(const char *catalog, const char *modules, const char *bundle,
                                     size_t bundle_len);
 
+/* elpi_recheck: the statement persisting the recheck of the listed modules (all when `all`). */
+marien_strings marien_bridge_recheck(const char *catalog, const char *modules, const char *const *names,
+                                     size_t n, int all);
+
 /* --- Queries -------------------------------------------------------------------------- */
 
 /* Find or compile the module and open a session for `goal`; NULL and *error (free it) on failure. */
 marien_session *marien_bridge_prepare(const char *catalog, const char *modules, const char *name,
                                       const char *goal, uint64_t max_facts, uint64_t cache_size,
                                       marien_str *error);
+
+/* elpi_run: a session for `pred` with parameters named `param_names` (as many as values;
+ * the values are consumed). NULL and *error on failure. */
+marien_session *marien_bridge_run_prepare(const char *catalog, const char *modules, const char *name,
+                                          const char *pred, const char *const *param_names,
+                                          marien_values *param_values, uint64_t max_facts,
+                                          uint64_t cache_size, marien_str *error);
+
+/* The output columns of an elpi_run session: column i is (name, type token...), the type in
+ * prefix form (a scalar type name, LIST elem, or STRUCT n then name and type per field). */
+size_t marien_bridge_column_count(marien_session *s);
+marien_strings marien_bridge_column(marien_session *s, size_t i);
+
+/* elpi_validate: the modules to run, in order (the listed ones, or all when `all`), and a
+ * session for one module's `violation S C X`. */
+marien_strings marien_bridge_validate_order(const char *modules, const char *const *names, size_t n, int all);
+marien_session *marien_bridge_validate_prepare(const char *catalog, const char *modules, const char *name,
+                                               const char *min_severity, uint64_t max_facts,
+                                               uint64_t cache_size, marien_str *error);
 
 /* The tables to scan: scan i is ("node" | "rel", table, column...). */
 size_t marien_bridge_scan_count(marien_session *s);
@@ -92,11 +115,17 @@ marien_str marien_bridge_add_batch(marien_session **s, size_t scan, marien_value
 marien_run *marien_bridge_start(marien_session *s, const char *goal, uint64_t fuel,
                                 uint64_t slice_steps, uint64_t max_solutions, marien_str *error);
 
+/* Start the goal of an elpi_run or elpi_validate session; consumes it. */
+marien_run *marien_bridge_goal_start(marien_session *s, uint64_t fuel, uint64_t slice_steps,
+                                     uint64_t max_solutions, marien_str *error);
+
 enum { MARIEN_STEP_SOLUTION = 0, MARIEN_STEP_PAUSED = 1, MARIEN_STEP_EXHAUSTED = 2,
        MARIEN_STEP_STOPPED = 3, MARIEN_STEP_ERROR = 4 };
 
-/* Run one slice. SOLUTION fills *bindings (var, json, ...), ERROR fills *error; after EXHAUSTED,
- * STOPPED or ERROR, *r is NULL. */
+/* Run one slice. SOLUTION fills *bindings: (var, json, ...) for elpi_query, the row's cell tokens
+ * for elpi_run (n, i<int>, f<float bits>, s<string>, b0/b1, l<count> items, t<count> fields), and
+ * (module, version, severity, code, message, label, key) for elpi_validate. ERROR fills *error;
+ * after EXHAUSTED, STOPPED or ERROR, *r is NULL. */
 int marien_bridge_step(marien_run **r, marien_strings *bindings, marien_str *error);
 
 void marien_bridge_free_session(marien_session *s);

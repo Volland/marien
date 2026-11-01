@@ -3,7 +3,7 @@
 - [ ] 1.1 `lakefile.lean` with the `Marien` library, `lean-elpi` pinned at `v0.4.0`, and a static archive target (library and archive done; pinned by commit `91ea5ba` of lean-elpi branch `host-libraries`, PR Volland/lean-elpi#2, until `v0.4.2` is tagged)
 - [x] 1.2 `shim/` CMake project pinned to the LadybugDB release, reusing the spike's link recipe, export list and size check
 - [x] 1.3 Check whether `rewriteFunc` can return a statement with several clauses (MERGE plus edge replacement); record the answer and choose the statement shape
-- [ ] 1.4 CI: build, size check, dependency and symbol checks, Lean tests, integration tests against an embedded LadybugDB (macOS done in `.github/workflows/tracer-bullet.yml`; the Linux leg with the PIC runtime archive is open)
+- [x] 1.4 CI: build, size check, dependency and symbol checks, Lean tests, integration tests against an embedded LadybugDB (`.github/workflows/tracer-bullet.yml`: macOS arm64, and Linux aarch64 in an Ubuntu 24.04 container with the PIC runtime archive, `tests/linux/run.sh`; 54/54 Lean and 33/33 integration tests pass on both)
 
 ## 2. Schema encoding
 

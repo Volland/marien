@@ -63,13 +63,17 @@ def sessionOf (schema : Schema) (stored : List Stored) (name : String) (maxFacts
   let (s, _) ← ok (prepare {} schema stored name maxFacts) "prepare"
   return s
 
+/-- Flattened `[var, json, …]` bindings as pairs. -/
+def pairsOf (items : Array String) : Array (String × String) :=
+  ((List.range (items.size / 2)).map fun i => (items[2 * i]!, items[2 * i + 1]!)).toArray
+
 /-- Run to the end: the solutions and whether the search was exhausted. -/
 partial def runAll (r : Run) : IO (Array (Array (String × String)) × Bool) :=
   go r #[]
 where
   go (r : Run) (acc : Array (Array (String × String))) : IO (Array (Array (String × String)) × Bool) :=
     match step r with
-    | .solution bs r' => go r' (acc.push bs)
+    | .solution bs r' => go r' (acc.push (pairsOf bs))
     | .paused r' => go r' acc
     | .done ex => pure (acc, ex)
     | .error e => throw (IO.userError e)
@@ -281,9 +285,9 @@ def derivedMetadata : IO Unit := do
   let schema : Schema ← ok (Schema.parse "{\"nodes\": [{\"name\": \"Person\", \"key\": \"id\", \"properties\": [
       {\"name\": \"id\", \"type\": \"INT64\"}, {\"name\": \"name\", \"type\": \"STRING\"}]}],
     \"rels\": [{\"name\": \"ReportsTo\", \"pairs\": [[\"Person\", \"Person\"]], \"properties\": []}]}") "schema"
-  let c ← ok (Store.check schema [] "org" "pred violation o:person.\nviolation P :- person.name P _, not (reports_to P _ _).\n") "save"
+  let c ← ok (Store.check schema [] "org" "pred unmanaged o:person.\nunmanaged P :- person.name P _, not (reports_to P _ _).\n") "save"
   check (c.derived.callsGenerated == ["person.name", "reports_to"]) s!"{c.derived.callsGenerated}"
-  check (c.derived.defines == ["violation"] && c.derived.entries == ["violation"]) s!"{repr c.derived}"
+  check (c.derived.defines == ["unmanaged"] && c.derived.entries == ["unmanaged"]) s!"{repr c.derived}"
 
 -- @tg: verifies:: [[openspec:rule-storage#Accumulate dependencies#Missing dependency]] {level: unit}
 def missingDependency : IO Unit := do

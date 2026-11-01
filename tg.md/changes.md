@@ -27,13 +27,15 @@ The engine side is lean-elpi change `add-host-api` (module `Elpi.Host`, with its
 
 M1: the whole stack end to end: shim, single runtime, catalog to signature, `elpi_save`, untyped `elpi_query`, full-scope materialization and fuel slicing.
 
-Implemented: the Lean layers with their five proofs (54 Lean tests), the C++ shim and bridge (`shim/`), and 33 integration tests against LadybugDB 0.22.1. Open: the Linux CI leg and the pin to LeanElpi 0.4.2.
+Implemented: the Lean layers with their five proofs (54 Lean tests), the C++ shim and bridge (`shim/`), and 33 integration tests against LadybugDB 0.22.1, in CI on macOS arm64 and Linux aarch64 (`tests/linux/run.sh`). Open: the pin to LeanElpi 0.4.2.
 
 - status:: proposed
 
 ## add-typed-validation
 
 M2: typed `elpi_run`, the `violation` protocol and `elpi_validate`, lazy recheck by schema hash, and distribution from Marien's extension server.
+
+Implemented: typed entry points, validation and schema evolution with six proofs (75 Lean tests, 52 integration tests on macOS arm64 and Linux aarch64), the out-of-tree build, the load-time version check and the release workflow. Open: the release's first run, and `INSTALL marien FROM`, which LadybugDB 0.22.1 refuses for non-official names ([[constraints#INSTALL accepts only official extensions]]).
 
 - status:: proposed
 

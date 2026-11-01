@@ -9,7 +9,7 @@ on:
 
 jobs:
   macos-arm64:
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -18,6 +18,8 @@ jobs:
         run: |
           curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: OpenSSL 3 for LadybugDB's CMake (Homebrew's default openssl is 4)
+        run: brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
       - name: Fetch pinned LadybugDB
         run: scripts/fetch-ladybug.sh
       - name: Build spike extension (both link modes)

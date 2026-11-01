@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # @tg: verifies:: [[openspec:extension-runtime#Only the init symbol is exported#Exported symbol list]] {level: integration}
+# @tg: verifies:: [[openspec:distribution#Out-of-tree build#Only entry points are exported]] {level: integration}
 # Fail unless the extension exports exactly LadybugDB's loader entry points, `init` and `name`.
 #   check-exports.sh <extension>
 set -euo pipefail

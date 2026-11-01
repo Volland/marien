@@ -1,9 +1,11 @@
-/* Integration tests of the tracer bullet against an embedded LadybugDB (liblbug's C API):
+/* Integration tests of the tracer bullet and of typed validation against an embedded LadybugDB
+ * (liblbug's C API):
  * the scenarios that need the database itself — transactions, the Cypher lexer, interrupts,
  * memory — and the end-to-end path of the others. Each test opens a fresh database, loads the
  * extension and checks results through Cypher.
  *
- * Usage: integration <extension> <scratch-dir> [test-name-substring] */
+ * Usage: integration <extension> <scratch-dir> [test-name-substring]
+ * Env: MARIEN_MISMATCH_EXT, a build of the extension pinned to another LadybugDB version. */
 #ifdef __APPLE__
 #include <mach/mach.h>
 #endif
@@ -279,14 +281,15 @@ static int hash_of(Db *d, char *out, size_t n) {
     return 1;
 }
 
-static int db_with(Db *d, const char *name, const char *const *ddl, size_t n) {
+/* The stored hash covers the tables the module reaches, so `module` reaches the ones compared. */
+static int db_with(Db *d, const char *name, const char *const *ddl, size_t n, const char *module) {
     if (!open_db(d, name)) return 0;
     char load[1200];
     snprintf(load, sizeof load, "LOAD EXTENSION '%s'", ext_path);
     if (!ok(d, "%s", load)) return 0;
     for (size_t i = 0; i < n; i++)
         if (!ok(d, "%s", ddl[i])) return 0;
-    return ok(d, "CALL elpi_init()") && ok(d, "CALL elpi_save('m', 'pred x o:int.\nx 1.')");
+    return ok(d, "CALL elpi_init()") && ok(d, "CALL elpi_save('m', '%s')", module);
 }
 
 /* @tg: verifies:: [[openspec:schema-encoding#Canonical schema hash#Order does not matter]] {level: integration} */
@@ -297,8 +300,9 @@ static int order_does_not_matter(void) {
                        "CREATE NODE TABLE A(id INT64 PRIMARY KEY, y INT64, x STRING)"};
     Db d1, d2;
     char h1[128], h2[128];
-    CHECK(db_with(&d1, "hash1", a, 2) && hash_of(&d1, h1, sizeof h1), "db 1: %s", last_error);
-    CHECK(db_with(&d2, "hash2", b, 2) && hash_of(&d2, h2, sizeof h2), "db 2: %s", last_error);
+    const char *m = "pred x o:a.\nx X :- a X, b _.";
+    CHECK(db_with(&d1, "hash1", a, 2, m) && hash_of(&d1, h1, sizeof h1), "db 1: %s", last_error);
+    CHECK(db_with(&d2, "hash2", b, 2, m) && hash_of(&d2, h2, sizeof h2), "db 2: %s", last_error);
     CHECK(strcmp(h1, h2) == 0, "same hash: %s vs %s", h1, h2);
     close_db(&d1);
     close_db(&d2);
@@ -311,8 +315,9 @@ static int type_change_changes_hash(void) {
     const char *b[] = {"CREATE NODE TABLE Person(id INT64 PRIMARY KEY, age DOUBLE)"};
     Db d1, d2;
     char h1[128], h2[128];
-    CHECK(db_with(&d1, "type1", a, 1) && hash_of(&d1, h1, sizeof h1), "db 1: %s", last_error);
-    CHECK(db_with(&d2, "type2", b, 1) && hash_of(&d2, h2, sizeof h2), "db 2: %s", last_error);
+    const char *m = "pred x o:person.\nx P :- person P.";
+    CHECK(db_with(&d1, "type1", a, 1, m) && hash_of(&d1, h1, sizeof h1), "db 1: %s", last_error);
+    CHECK(db_with(&d2, "type2", b, 1, m) && hash_of(&d2, h2, sizeof h2), "db 2: %s", last_error);
     CHECK(strcmp(h1, h2) != 0, "the hash differs");
     close_db(&d1);
     close_db(&d2);
@@ -399,7 +404,7 @@ static int cannot_escape(void) {
 /* @tg: verifies:: [[openspec:rule-storage#Derived module metadata#Called generated predicates are listed]] {level: integration} */
 static int derived_metadata(void) {
     ORG(d);
-    OK(&d, "CALL elpi_save('org', 'pred violation o:person.\nviolation P :- person.name P _, not (knows P _ _).')");
+    OK(&d, "CALL elpi_save('org', 'pred unmanaged o:person.\nunmanaged P :- person.name P _, not (knows P _ _).')");
     const char *r = OK(&d, "MATCH (m:_elpi_module {name: 'org'}) RETURN m.derived");
     CHECK(strstr(r, "\"calls_generated\": [\"knows\", \"person.name\"]") ||
               strstr(r, "\"calls_generated\":[\"knows\",\"person.name\"]"),
@@ -671,6 +676,333 @@ static int memory_returns(void) {
     return 1;
 }
 
+/* --- typed validation (M2) -------------------------------------------------------------- */
+
+/* Persons 3 (CEO), 7 (reports to 3) and 9 (no manager, no title), and module org. */
+static const char *org_src =
+    "pred manager_of i:person, o:person, o:string.\n"
+    "manager_of P M T :- reports_to P _ M, person.title M T.\n"
+    "type helper person -> prop.\nhelper _.\n"
+    "pred violation o:severity, o:string, o:subject.\n"
+    "violation error \"no-manager\" (subj_person P) :- person.name P _, not (reports_to P _ _).\n"
+    "violation warning \"no-title\" (subj_person P) :- person P, not (person.title P _).";
+
+static int company(Db *d, const char *name) {
+    if (!open_db(d, name)) return 0;
+    const char *setup[] = {
+        "CREATE NODE TABLE Person(id INT64 PRIMARY KEY, name STRING, title STRING)",
+        "CREATE REL TABLE ReportsTo(FROM Person TO Person)",
+        "CREATE (:Person {id: 3, name: 'ceo', title: 'CEO'}), (:Person {id: 7, name: 'ann', title: 'Engineer'}), "
+        "(:Person {id: 9, name: 'bob'})",
+        "MATCH (a:Person {id: 7}), (b:Person {id: 3}) CREATE (a)-[:ReportsTo]->(b)",
+        "CALL elpi_init()",
+    };
+    char load[1200];
+    snprintf(load, sizeof load, "LOAD EXTENSION '%s'", ext_path);
+    if (!ok(d, "%s", load)) return 0;
+    for (size_t i = 0; i < sizeof setup / sizeof *setup; i++)
+        if (!ok(d, "%s", setup[i])) return 0;
+    return ok(d, "CALL elpi_save('org', '%s')", org_src) != NULL;
+}
+
+#define COMPANY(d)                                                                \
+    Db d;                                                                         \
+    CHECK(company(&d, __func__), "setup failed: %s", last_error)
+
+/* The column types of a query's result, as lbug_data_type_id values. */
+static int column_types(Db *d, const char *q, int *ids, int max) {
+    lbug_query_result r;
+    lbug_connection_query(&d->conn, q, &r);
+    if (!lbug_query_result_is_success(&r)) {
+        char *e = lbug_query_result_get_error_message(&r);
+        snprintf(last_error, sizeof last_error, "%s", e);
+        lbug_destroy_string(e);
+        lbug_query_result_destroy(&r);
+        return -1;
+    }
+    int n = (int)lbug_query_result_get_num_columns(&r);
+    for (int i = 0; i < n && i < max; i++) {
+        lbug_logical_type t;
+        lbug_query_result_get_column_data_type(&r, (uint64_t)i, &t);
+        ids[i] = (int)lbug_data_type_get_id(&t);
+        lbug_data_type_destroy(&t);
+    }
+    lbug_query_result_destroy(&r);
+    return n;
+}
+
+/* @tg: verifies:: [[openspec:rule-execution#Typed entry points#Output columns are typed at bind time]] {level: integration} */
+static int typed_columns(void) {
+    COMPANY(d);
+    int ids[4];
+    int n = column_types(&d, "CALL elpi_run('org', 'manager_of', {in1: 7}) RETURN *", ids, 4);
+    CHECK(n == 2 && ids[0] == LBUG_INT64 && ids[1] == LBUG_STRING, "out2 INT64, out3 STRING: %d columns %s", n,
+          n < 0 ? last_error : "");
+    /* binding does not solve: with no fuel the statement still prepares, and fails only when run */
+    OK(&d, "CALL elpi_fuel=1");
+    lbug_prepared_statement ps;
+    lbug_connection_prepare(&d.conn, "CALL elpi_run('org', 'manager_of', {in1: 7}) RETURN out2", &ps);
+    int prepared = lbug_prepared_statement_is_success(&ps);
+    lbug_prepared_statement_destroy(&ps);
+    CHECK(prepared, "binding must not run the goal");
+    const char *e = fails(&d, "CALL elpi_run('org', 'manager_of', {in1: 7}) RETURN out2");
+    CHECK(e && strstr(e, "elpi_fuel"), "running needs fuel: %s", e ? e : "(succeeded)");
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:rule-execution#Typed entry points#Node results come back as primary keys]] {level: integration} */
+static int node_results(void) {
+    COMPANY(d);
+    const char *r = OK(&d, "CALL elpi_run('org', 'manager_of', {in1: 7}) RETURN out2, out3");
+    CHECK(strcmp(r, "3|CEO\n") == 0, "row (3, CEO): %s", r);
+    r = OK(&d, "CALL elpi_run('org', 'manager_of', {in1: 7}) WITH out2 MATCH (p:Person {id: out2}) RETURN p.name");
+    CHECK(strcmp(r, "ceo\n") == 0, "person 3: %s", r);
+    /* parameters may also come as a map */
+    r = OK(&d, "CALL elpi_run('org', 'manager_of', map(['in1'], [7])) RETURN out2");
+    CHECK(strcmp(r, "3\n") == 0, "map parameters: %s", r);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:rule-execution#Typed entry points#Bad parameters fail the bind]] {level: integration} */
+static int bad_parameters(void) {
+    COMPANY(d);
+    const char *e = fails(&d, "CALL elpi_run('org', 'manager_of', {in1: 'seven'}) RETURN *");
+    CHECK(e && strstr(e, "in1") && strstr(e, "person"), "names in1 and person: %s", e ? e : "(succeeded)");
+    e = fails(&d, "CALL elpi_run('org', 'manager_of', {in2: 7}) RETURN *");
+    CHECK(e && strstr(e, "in2"), "names the unknown parameter: %s", e ? e : "(succeeded)");
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:rule-execution#Typed entry points#Predicates without modes are rejected]] {level: integration} */
+static int without_modes(void) {
+    COMPANY(d);
+    const char *e = fails(&d, "CALL elpi_run('org', 'helper', {in1: 7}) RETURN *");
+    CHECK(e && strstr(e, "no mode declaration"), "rejected: %s", e ? e : "(succeeded)");
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:rule-execution#Typed entry points#Strings round-trip without printing]] {level: integration} */
+static int strings_round_trip(void) {
+    COMPANY(d);
+    /* the title is:  say "hi" \ ok <newline> next */
+    OK(&d, "MATCH (p:Person {id: 3}) SET p.title = 'say \"hi\" \\\\ ok\nnext'");
+    const char *r = OK(&d, "CALL elpi_run('org', 'manager_of', {in1: 7}) WITH out3 MATCH (p:Person {id: 3}) "
+                           "RETURN out3 = p.title, size(out3)");
+    CHECK(strcmp(r, "True|18\n") == 0, "byte for byte: %s", r);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:validation#Violation protocol#Module with violation takes part]] {level: integration} */
+static int violation_takes_part(void) {
+    COMPANY(d);
+    const char *r = OK(&d, "CALL elpi_validate(['org']) WHERE severity = 'error' "
+                           "RETURN module, version, code, message, subject_label, subject_pk ORDER BY subject_pk");
+    CHECK(strcmp(r, "org|1|no-manager|no-manager|Person|3\norg|1|no-manager|no-manager|Person|9\n") == 0,
+          "one row per person without a manager: %s", r);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:validation#Violation protocol#Wrong signature is rejected]] {level: integration} */
+static int wrong_signature(void) {
+    COMPANY(d);
+    const char *e = fails(&d, "CALL elpi_save('bad', 'pred violation o:string.\nviolation \"x\".')");
+    CHECK(e && strstr(e, "violation o:severity, o:string, o:subject"), "rejected: %s", e ? e : "(succeeded)");
+    const char *r = OK(&d, "MATCH (m:_elpi_module {name: 'bad'}) RETURN count(*)");
+    CHECK(strcmp(r, "0\n") == 0, "not stored: %s", r);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:validation#Violation protocol#Reasoning modules are skipped]] {level: integration} */
+static int reasoning_skipped(void) {
+    COMPANY(d);
+    OK(&d, "CALL elpi_save('paths', 'pred path o:person, o:person.\npath A B :- reports_to A _ B.')");
+    const char *r = OK(&d, "CALL elpi_validate() RETURN DISTINCT module");
+    CHECK(strcmp(r, "org\n") == 0, "only org reports: %s", r);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:validation#Subject union kind#One constructor per table]] {level: integration} */
+static int subject_constructors(void) {
+    COMPANY(d);
+    OK(&d, "CREATE NODE TABLE Dept(code STRING PRIMARY KEY)");
+    const char *r = OK(&d, "CALL elpi_signature() WHERE text CONTAINS 'subj_' RETURN name ORDER BY name");
+    CHECK(strcmp(r, "Dept\nPerson\nReportsTo\n") == 0, "one per table, none for _elpi_*: %s", r);
+    r = OK(&d, "CALL elpi_signature() WHERE kind = 'protocol' RETURN text");
+    CHECK(strstr(r, "kind subject type."), "the protocol row: %s", r);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:validation#Uniform validation report#Report across modules]] {level: integration} */
+static int report_across_modules(void) {
+    COMPANY(d);
+    OK(&d, "CALL elpi_save('hr', 'pred violation o:severity, o:string, o:subject.\n"
+           "violation info \"reviewed\" (subj_person (person 7)).\n"
+           "pred violation_message i:string, i:subject, o:string.\n"
+           "violation_message \"reviewed\" _ \"person 7 was reviewed\".')");
+    OK(&d, "CALL elpi_save('hr', 'pred violation o:severity, o:string, o:subject.\n"
+           "violation error \"reviewed\" (subj_person (person 7)).\n"
+           "pred violation_message i:string, i:subject, o:string.\n"
+           "violation_message \"reviewed\" _ \"person 7 was reviewed\".')");
+    const char *r = OK(&d, "CALL elpi_validate([], 'info') RETURN count(*)");
+    CHECK(strcmp(r, "0\n") == 0, "an empty list runs nothing: %s", r);
+    r = OK(&d, "CALL elpi_validate(['hr', 'org'], 'error') RETURN module, version, message, subject_pk");
+    CHECK(strcmp(r, "hr|2|person 7 was reviewed|7\norg|1|no-manager|3\norg|1|no-manager|9\n") == 0,
+          "hr first, each with its version: %s", r);
+    r = OK(&d, "CALL elpi_validate() WHERE severity = 'error' RETURN module");
+    CHECK(strncmp(r, "hr\norg\n", 7) == 0, "name order when omitted: %s", r);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:validation#Uniform validation report#Severity filter]] {level: integration} */
+static int severity_filter(void) {
+    COMPANY(d);
+    const char *r = OK(&d, "CALL elpi_validate(['org'], 'error') RETURN DISTINCT severity");
+    CHECK(strcmp(r, "error\n") == 0, "only errors: %s", r);
+    r = OK(&d, "CALL elpi_validate(['org']) RETURN count(*)");
+    CHECK(strcmp(r, "3\n") == 0, "info keeps all: %s", r);
+    const char *e = fails(&d, "CALL elpi_validate(['org'], 'fatal') RETURN *");
+    CHECK(e && strstr(e, "min_severity"), "bad threshold: %s", e ? e : "(succeeded)");
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:validation#Uniform validation report#A failing module fails the call]] {level: integration} */
+static int failing_module(void) {
+    COMPANY(d);
+    OK(&d, "CALL elpi_save('hr', 'pred violation o:severity, o:string, o:subject.\npred spin.\nspin :- spin.\n"
+           "violation error \"x\" (subj_person (person 3)) :- spin.')");
+    OK(&d, "CALL elpi_fuel=100000");
+    const char *e = fails(&d, "CALL elpi_validate(['org', 'hr']) RETURN *");
+    CHECK(e && strstr(e, "module hr") && strstr(e, "elpi_fuel"), "names hr and the budget: %s",
+          e ? e : "(succeeded: a partial report)");
+    close_db(&d);
+    return 1;
+}
+
+static int stored_row(Db *d, char *out, size_t n) {
+    const char *r = ok(d, "MATCH (m:_elpi_module {name: 'org'}) RETURN m.version, m.schema_hash, m.status, m.error");
+    if (!r) return 0;
+    snprintf(out, n, "%s", r);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:schema-evolution#Reached-table schema hash#Unrelated DDL keeps the hash]] {level: integration} */
+static int unrelated_ddl(void) {
+    COMPANY(d);
+    OK(&d, "CREATE NODE TABLE Invoice(no INT64 PRIMARY KEY)");
+    const char *r = OK(&d, "CALL elpi_recheck(['org'])");
+    CHECK(strcmp(r, "org|ok|ok|\n") == 0, "the hash is unchanged: %s", r);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:schema-evolution#Reached-table schema hash#Reached DDL changes the hash]] {level: integration} */
+/* @tg: verifies:: [[openspec:schema-evolution#Explicit recheck#Recheck persists regenerated modules]] {level: integration} */
+static int reached_ddl(void) {
+    COMPANY(d);
+    char before[512], after[512];
+    CHECK(stored_row(&d, before, sizeof before), "%s", last_error);
+    OK(&d, "ALTER TABLE Person ADD email STRING");
+    const char *r = OK(&d, "CALL elpi_recheck()");
+    CHECK(strcmp(r, "org|stale|ok|\n") == 0, "stale, then ok: %s", r);
+    CHECK(stored_row(&d, after, sizeof after), "%s", last_error);
+    CHECK(strcmp(before, after) != 0 && strstr(after, "|ok|"), "a new hash is stored: %s -> %s", before, after);
+    r = OK(&d, "CALL elpi_recheck()");
+    CHECK(strcmp(r, "org|ok|ok|\n") == 0, "the stored hash is the recomputed one: %s", r);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:schema-evolution#Lazy recheck on run#Compatible change recompiles in memory]] {level: integration} */
+static int compatible_change(void) {
+    COMPANY(d);
+    char before[512], after[512];
+    OK(&d, "CALL elpi_run('org', 'manager_of', {in1: 7}) RETURN out2");
+    CHECK(stored_row(&d, before, sizeof before), "%s", last_error);
+    OK(&d, "ALTER TABLE Person ADD email STRING");
+    const char *r = OK(&d, "CALL elpi_run('org', 'manager_of', {in1: 7}) RETURN out2, out3");
+    CHECK(strcmp(r, "3|CEO\n") == 0, "runs against the new signature: %s", r);
+    CHECK(stored_row(&d, after, sizeof after), "%s", last_error);
+    CHECK(strcmp(before, after) == 0, "the stored row is unchanged: %s -> %s", before, after);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:schema-evolution#Lazy recheck on run#Breaking change fails the run]] {level: integration} */
+static int breaking_change(void) {
+    COMPANY(d);
+    OK(&d, "CALL elpi_run('org', 'manager_of', {in1: 7}) RETURN out2");
+    OK(&d, "DROP TABLE ReportsTo");
+    const char *e = fails(&d, "CALL elpi_run('org', 'manager_of', {in1: 7}) RETURN *");
+    CHECK(e && strstr(e, "reports_to") && strstr(e, "org:"), "type error naming reports_to in org: %s",
+          e ? e : "(succeeded with the old compilation)");
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:schema-evolution#Broken module status#Recheck marks a module broken]] {level: integration} */
+/* @tg: verifies:: [[openspec:schema-evolution#Broken module status#Saving clears broken]] {level: integration} */
+static int recheck_broken(void) {
+    COMPANY(d);
+    OK(&d, "DROP TABLE ReportsTo");
+    const char *r = OK(&d, "CALL elpi_recheck()");
+    CHECK(strncmp(r, "org|stale|broken|", 17) == 0 && strstr(r, "reports_to"), "broken: %s", r);
+    r = OK(&d, "MATCH (m:_elpi_module {name: 'org'}) RETURN m.status, m.error CONTAINS 'reports_to'");
+    CHECK(strcmp(r, "broken|True\n") == 0, "stored with its error: %s", r);
+    const char *e = fails(&d, "CALL elpi_validate() RETURN *");
+    CHECK(e && strstr(e, "module org"), "validate fails on a broken module: %s", e ? e : "(succeeded)");
+    OK(&d, "CALL elpi_save('org', 'pred violation o:severity, o:string, o:subject.\n"
+           "violation error \"no-name\" (subj_person P) :- person P, not (person.name P _).')");
+    r = OK(&d, "MATCH (m:_elpi_module {name: 'org'}) RETURN m.status, m.error");
+    CHECK(strcmp(r, "ok|\n") == 0, "saving clears broken: %s", r);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:schema-evolution#Explicit recheck#Recheck is atomic]] {level: integration} */
+static int recheck_atomic(void) {
+    COMPANY(d);
+    OK(&d, "CALL elpi_save('hr', 'pred violation o:severity, o:string, o:subject.\n"
+           "violation info \"x\" (subj_person P) :- person.title P _.')");
+    char before[512], after[512];
+    CHECK(stored_row(&d, before, sizeof before), "%s", last_error);
+    OK(&d, "ALTER TABLE Person ADD email STRING");
+    OK(&d, "BEGIN TRANSACTION");
+    const char *r = OK(&d, "CALL elpi_recheck(['org', 'hr'])");
+    CHECK(count_lines(r) == 2, "both rechecked: %s", r);
+    OK(&d, "ROLLBACK");
+    CHECK(stored_row(&d, after, sizeof after), "%s", last_error);
+    CHECK(strcmp(before, after) == 0, "rolled back: %s -> %s", before, after);
+    r = OK(&d, "MATCH (m:_elpi_module) WHERE m.status = 'ok' RETURN count(*)");
+    CHECK(strcmp(r, "2\n") == 0, "both untouched: %s", r);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:distribution#LadybugDB version check#Mismatched database is refused]] {level: integration} */
+static int version_mismatch(void) {
+    const char *mismatch = getenv("MARIEN_MISMATCH_EXT");
+    CHECK(mismatch, "MARIEN_MISMATCH_EXT names a build pinned to another LadybugDB version");
+    Db d;
+    CHECK(open_db(&d, __func__), "%s", last_error);
+    const char *e = fails(&d, "LOAD EXTENSION '%s'", mismatch);
+    CHECK(e && strstr(e, "0.21.2") && strstr(e, "0.22.1"), "names both versions: %s", e ? e : "(loaded)");
+    e = fails(&d, "CALL elpi_signature() RETURN *");
+    CHECK(e && strstr(e, "elpi_signature"), "no elpi_* function is registered: %s", e ? e : "(registered)");
+    close_db(&d);
+    return 1;
+}
+
 typedef struct {
     const char *name;
     int (*fn)(void);
@@ -701,6 +1033,15 @@ int main(int argc, char **argv) {
         {"slicing same answers", slicing_same_answers}, {"fuel exhaustion", fuel_exhaustion},
         {"fact budget", fact_budget}, {"solution limit", solution_limit},
         {"timeout is an error", timeout_is_error}, {"memory returns", memory_returns},
+        {"typed columns", typed_columns}, {"node results", node_results}, {"bad parameters", bad_parameters},
+        {"without modes", without_modes}, {"strings round-trip", strings_round_trip},
+        {"violation takes part", violation_takes_part}, {"wrong signature", wrong_signature},
+        {"reasoning skipped", reasoning_skipped}, {"subject constructors", subject_constructors},
+        {"report across modules", report_across_modules}, {"severity filter", severity_filter},
+        {"failing module", failing_module}, {"unrelated DDL", unrelated_ddl}, {"reached DDL", reached_ddl},
+        {"compatible change", compatible_change}, {"breaking change", breaking_change},
+        {"recheck broken", recheck_broken}, {"recheck atomic", recheck_atomic},
+        {"version mismatch", version_mismatch},
     };
     int run = 0;
     for (size_t i = 0; i < sizeof tests / sizeof *tests; i++) {

@@ -14,7 +14,9 @@ Registers Marien's table functions with LadybugDB and implements their bind, exe
 
 Exports only the loader entry points `init` and `name`; everything else is hidden so the bundled Lean runtime, GMP and libuv cannot clash with symbols of LadybugDB or other extensions. Compiled with the platform's system C++ compiler against the pinned LadybugDB headers plus the CMake-generated ones (`shim/CMakeLists.txt`, checking the LadybugDB tag), and linked by `scripts/link-extension.sh`. Prototype: `spike/shim.cpp`.
 
-Registers `elpi_init`, `elpi_save`, `elpi_drop` and `elpi_import` as standalone functions whose bind asks Lean for the statements and whose `rewriteFunc` returns them; `elpi_export`, `elpi_signature` and `elpi_query` as table functions; and the options `elpi_fuel`, `elpi_timeout_ms`, `elpi_max_solutions`, `elpi_max_facts`, `elpi_slice_steps` and `elpi_cache_size`. Integration tests: `tests/integration/integration.c`.
+Registers `elpi_init`, `elpi_save`, `elpi_drop`, `elpi_import` and `elpi_recheck` as standalone functions whose bind asks Lean for the statements and whose `rewriteFunc` returns them; `elpi_export`, `elpi_signature`, `elpi_query`, `elpi_run` and `elpi_validate` as table functions; and the options `elpi_fuel`, `elpi_timeout_ms`, `elpi_max_solutions`, `elpi_max_facts`, `elpi_slice_steps` and `elpi_cache_size`. Integration tests: `tests/integration/integration.c`.
+
+`elpi_run` takes its parameters as a STRUCT or MAP literal and declares its columns at bind from the types Lean reports; rows arrive as typed prefix tokens and become LadybugDB values (integers range-checked against the column type). `elpi_validate` runs every module to the end before it returns a row. On load, `init` refuses a LadybugDB release other than the pinned one before it registers anything. Built from a clean checkout by `scripts/build-extension.sh`; released by `.github/workflows/release.yml` over `scripts/release-matrix.sh`.
 
 - module:: shim/extension.cpp
 - milestone:: Spike
@@ -24,7 +26,10 @@ Registers `elpi_init`, `elpi_save`, `elpi_drop` and `elpi_import` as standalone 
 - motivated_by:: [[constraints#Extensions are C++ shared libraries]]
 - motivated_by:: [[decisions#One rewritten statement per write]]
 - motivated_by:: [[decisions#Explicit elpi_init]]
+- motivated_by:: [[decisions#Version check by release, else by storage version]]
+- motivated_by:: [[decisions#Releases built from one matrix script]]
 - introduced_by:: [[changes#spike-lean-runtime-in-ladybug]]
+- changed_by:: [[changes#add-typed-validation]] {note: "elpi_run, elpi_validate, elpi_recheck, the version check and the release build"}
 
 ## Runtime bridge
 
@@ -95,6 +100,8 @@ Turns a schema into an ELPI signature: one kind per node table with a primary-ke
 
 `Signature.ofSchema` is the single encoding function shared with the offline codegen; `_elpi_*` tables are excluded by construction.
 
+Every signature starts with the validation protocol's `severity` and `subject` kinds, and each table adds its `subj_<table>` constructor; the protocol's names take part in the injectivity check. `tableOf?` maps any generated identifier back to its table, for the reached-table set.
+
 - module:: Marien.Encoding.Signature
 - milestone:: M1
 - depends_on:: [[components#Schema model]]
@@ -102,7 +109,9 @@ Turns a schema into an ELPI signature: one kind per node table with a primary-ke
 - motivated_by:: [[decisions#Schema types at runtime and Lean inductives offline]]
 - motivated_by:: [[decisions#Snake-case names with a collision check]]
 - motivated_by:: [[decisions#Constructor and node predicate share the table name]]
+- motivated_by:: [[decisions#Subject as a generated union kind]]
 - introduced_by:: [[changes#add-tracer-bullet]]
+- changed_by:: [[changes#add-typed-validation]] {note: "protocol declarations and subject constructors"}
 
 ## Value codec
 
@@ -110,12 +119,17 @@ Encodes LadybugDB values as ELPI terms and decodes result terms back into typed 
 
 `decode (encode v) = v` is proved for every supported property type.
 
+M2 adds the column codec of typed entry points (`Col`: scalars, lists, records, node kinds as primary keys, edge kinds as internal ids) with `value_roundtrip` and `decodeC_sound`, and the subject codec with `subject_decode_encode` and `subject_encode_decode`.
+
 - module:: Marien.Encoding.Codec
 - milestone:: M1
 - depends_on:: [[components#Signature generator]]
 - motivated_by:: [[decisions#Predicate-per-property encoding]]
 - motivated_by:: [[decisions#Proofs where practical]]
+- motivated_by:: [[decisions#Columns of typed entry points come from the predicate signature]]
+- motivated_by:: [[decisions#Subject as a generated union kind]]
 - introduced_by:: [[changes#add-tracer-bullet]]
+- changed_by:: [[changes#add-typed-validation]] {note: "column and subject codecs"}
 
 ## Module store
 
@@ -130,11 +144,16 @@ Source text is stored byte-exact; `unescape (escape s) = s` and the absence of a
 - motivated_by:: [[decisions#Rules stored in system tables]]
 - motivated_by:: [[decisions#CALL functions first]]
 - motivated_by:: [[decisions#One rewritten statement per write]]
+- motivated_by:: [[decisions#A module reaches what its accumulated modules reach]]
+- motivated_by:: [[decisions#Runs recompile in memory; only elpi_recheck writes]]
 - introduced_by:: [[changes#add-tracer-bullet]]
+- changed_by:: [[changes#add-typed-validation]] {note: "reached tables and hash, the violation signature check, status and error, elpi_recheck"}
 
 ## Handle cache
 
 In-memory LRU cache of compiled LeanElpi programs keyed by module version and source, schema hash and the sources of accumulated modules; never persisted. Source: `Marien/Store/Cache.lean`.
+
+From M2 the schema hash in the key is the module's reached-table hash, so DDL on tables a module does not reach keeps its entry, and DDL on one it reaches compiles it anew.
 
 - module:: Marien.Store.Cache
 - milestone:: M1
@@ -143,12 +162,13 @@ In-memory LRU cache of compiled LeanElpi programs keyed by module version and so
 - motivated_by:: [[decisions#Lazy recheck by schema hash]]
 - motivated_by:: [[decisions#Handle cache keyed by source hashes]]
 - introduced_by:: [[changes#add-tracer-bullet]]
+- changed_by:: [[changes#add-typed-validation]] {note: "keyed by the reached-table hash"}
 
 ## Executor
 
 Runs queries and entry points: materializes facts, solves in fuel slices with interrupt, deadline and budget checks, and decodes rows. Source: `Marien/Exec/Run.lean`.
 
-M1 ships the untyped `elpi_query`; M2 adds typed `elpi_run`; M3 adds narrowed scope for monotone entry points.
+M1 ships the untyped `elpi_query`; M2 adds typed `elpi_run` (`prepareRun`, `bindArgs`, `startGoal`), one module of `elpi_validate` (`prepareValidate`) and the lazy recheck (`compiledFor`); M3 adds narrowed scope for monotone entry points.
 
 - module:: Marien.Exec.Run
 - milestone:: M1
@@ -159,16 +179,22 @@ M1 ships the untyped `elpi_query`; M2 adds typed `elpi_run`; M3 adds narrowed sc
 - motivated_by:: [[decisions#Typed entry points and an untyped debug query]]
 - motivated_by:: [[constraints#Out of fuel discards the search]]
 - motivated_by:: [[decisions#Debug queries load the tables their goal names]]
+- motivated_by:: [[decisions#Columns of typed entry points come from the predicate signature]]
+- motivated_by:: [[decisions#Runs recompile in memory; only elpi_recheck writes]]
 - introduced_by:: [[changes#add-tracer-bullet]]
+- changed_by:: [[changes#add-typed-validation]] {note: "elpi_run, elpi_validate sessions, lazy recheck"}
 
 ## Validator
 
 Runs the `violation` protocol across modules and returns the uniform validation report, delegating large runs to the partition planner. Source: `Marien/Exec/Validate.lean`.
 
+M2: `validationOrder` picks the listed modules that declare `violation` (all, by name, when the list is omitted), `reportRow` decodes a solution with the subject codec and asks `violation_message` for the message, and `keep` applies the severity threshold (`filter_sound`). Every module runs at full scope; a failing one fails the call.
+
 - module:: Marien.Exec.Validate
 - milestone:: M2
 - depends_on:: [[components#Executor]]
 - motivated_by:: [[decisions#Validation protocol]]
+- motivated_by:: [[decisions#Subject as a generated union kind]]
 - introduced_by:: [[changes#add-typed-validation]]
 
 ## Rule analyzer

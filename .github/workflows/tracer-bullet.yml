@@ -1,6 +1,7 @@
-# The tracer bullet (OpenSpec change add-tracer-bullet): build Marien's extension against the
-# pinned LadybugDB, check its dependencies, exports and size, run the Lean tests and the
-# integration tests against an embedded LadybugDB (liblbug).
+# The tracer bullet and typed validation (OpenSpec changes add-tracer-bullet, add-typed-validation):
+# build Marien's extension against the pinned LadybugDB, check its dependencies, exports and size,
+# run the Lean tests and the integration tests against an embedded LadybugDB (liblbug), on macOS
+# and on Linux.
 name: tracer-bullet
 
 on:
@@ -19,16 +20,37 @@ jobs:
         run: |
           curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: OpenSSL 3 for LadybugDB's CMake (Homebrew's default openssl is 4)
+        run: brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
       - name: Fetch pinned LadybugDB
         run: scripts/fetch-ladybug.sh
       - name: Lean tests (engine contract and M1 unit tests)
         run: lake test
       - name: Build the extension
         run: shim/build.sh strip
-      - name: Dependencies, exports and size
+      - name: One library, dependencies, exports and size
         run: |
+          scripts/check-one-library.sh build
           scripts/check-deps.sh build/libmarien.lbug_extension
           scripts/check-exports.sh build/libmarien.lbug_extension
           scripts/check-size.sh build/libmarien.lbug_extension
       - name: Integration tests
         run: tests/integration/run.sh
+      - name: Download from the extension-server layout and load
+        run: scripts/test-install.sh build/libmarien.lbug_extension
+      - name: Release workflow shape
+        run: scripts/check-release-workflow.sh
+
+  linux-aarch64:
+    # The whole Linux leg runs in a fresh Ubuntu 24.04 container (tests/linux/run.sh): Lean tests,
+    # the Lean runtime archive rebuilt as PIC (scripts/build-leanrt-pic.sh), the extension built
+    # with it, dependency, export and size checks, and the integration tests against liblbug.
+    runs-on: ubuntu-24.04-arm
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned LadybugDB source
+        run: git clone -q --depth 1 --branch "v$(cat scripts/ladybug-version)" https://github.com/LadybugDB/ladybug .deps/ladybug
+      - name: Build, check and test in Docker
+        run: tests/linux/docker.sh

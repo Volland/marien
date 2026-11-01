@@ -250,6 +250,40 @@ def hex16 (x : UInt64) : String :=
 -- @tg: implements:: [[openspec:schema-encoding#Canonical schema hash]]
 def hash (s : Schema) : String := hex16 (fnv1a64 ("\n".intercalate s.canonical))
 
+/-! ### Reached-table hash -/
+
+/-- The tables named in `names`, and nothing else. -/
+def restrict (names : List String) (s : Schema) : Schema :=
+  { nodes := s.nodes.filter (names.contains ·.name), rels := s.rels.filter (names.contains ·.name) }
+
+/-- The hash a module stores: the schema hash of exactly the tables it reaches. A table that
+is gone simply drops out, so dropping a reached table changes the hash. -/
+-- @tg: implements:: [[openspec:schema-evolution#Reached-table schema hash]]
+def reachedHash (names : List String) (s : Schema) : String := hash (s.restrict names)
+
+theorem restrict_restrict (names : List String) (s : Schema) :
+    (s.restrict names).restrict names = s.restrict names := by
+  simp [restrict, List.filter_filter]
+
+/-- The reached hash of a catalog equals that of its restriction to the reached set: tables a
+module does not reach never enter it. -/
+-- @tg: verifies:: [[openspec:schema-evolution#Reached-table schema hash#Unrelated DDL keeps the hash]] {level: unit}
+theorem hash_restrict (names : List String) (s : Schema) :
+    reachedHash names s = reachedHash names (s.restrict names) := by
+  simp [reachedHash, restrict_restrict]
+
+/-- Two catalogs that agree on the reached tables give the same reached hash. -/
+theorem reachedHash_congr {names : List String} {s t : Schema}
+    (h : s.restrict names = t.restrict names) : reachedHash names s = reachedHash names t := by
+  simp [reachedHash, h]
+
+/-- The order in which the catalog lists tables does not change the reached hash. -/
+-- @tg: verifies:: [[openspec:schema-evolution#Reached-table schema hash#Catalog order does not matter]] {level: unit}
+theorem hash_perm {names : List String} {s t : Schema} (hn : s.nodes.Perm t.nodes)
+    (hr : s.rels.Perm t.rels) : reachedHash names s = reachedHash names t := by
+  unfold reachedHash hash
+  rw [canonical_perm (s := s.restrict names) (t := t.restrict names) (hn.filter _) (hr.filter _)]
+
 end Schema
 
 end Marien

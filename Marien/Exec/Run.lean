@@ -1,11 +1,12 @@
 import Marien.Encoding.Codec
 import Marien.Store.Module
 import Marien.Store.Cache
+import Marien.Exec.Validate
 
 /-!
 # Executor
 
-One call of `elpi_query`:
+One call of `elpi_query`, `elpi_run` or one module of `elpi_validate`:
 
 1. `prepare` finds the compiled module in the handle cache, or compiles it after the generated
    signature with its accumulated modules, and works out which tables to scan from the module's
@@ -17,6 +18,14 @@ One call of `elpi_query`:
    resolution steps at a time. Between slices the shim checks LadybugDB's interrupt flag and
    the `elpi_timeout_ms` deadline.
 
+The cache key carries the hash of the tables the module reaches. When the schema has changed
+since the save, the key is new and the module is regenerated and recompiled in memory; a
+failure fails the run and nothing older is ever used. Runs never write.
+
+`elpi_run` builds its goal from the predicate's signature: `i:` arguments from the parameters
+through the typed codec, `o:` arguments as output columns `outN` whose types are fixed when the
+call is bound. `elpi_validate` runs `violation S C X` and turns solutions into report rows.
+
 Facts are added to a copy of the cached program, so every call solves in a fresh store and
 nothing of it outlives the call. Exhausting `elpi_fuel` or `elpi_max_facts` is an error, never a
 partial answer; only `elpi_max_solutions` stops a search early, and says so.
@@ -26,9 +35,9 @@ partial answer; only `elpi_max_solutions` stops a search early, and says so.
 
 namespace Marien.Exec
 
-open Marien.Encoding
+open Marien.Encoding Marien.Encoding.Codec
 open Marien.Store
-open Marien.Engine (ResultTerm Program Query)
+open Marien.Engine (ResultTerm Program Query GoalArg)
 
 /-! ### What to scan -/
 
@@ -101,6 +110,16 @@ def goalWords (goal : String) : List String :=
     if word c then (ws, c :: cur) else if cur.isEmpty then (ws, []) else (String.ofList cur.reverse :: ws, [])
   (if cur.isEmpty then ws else String.ofList cur.reverse :: ws).reverse
 
+/-- What each solution becomes. -/
+inductive Output where
+  /-- `elpi_query`: each named variable with the JSON form of its binding. -/
+  | text
+  /-- `elpi_run`: one row, a cell per output column. -/
+  | typed (cols : Array (String × Col))
+  /-- `elpi_validate`: one report row, or nothing when below the severity threshold. -/
+  | report (ctx : ReportCtx)
+  deriving Inhabited
+
 /-- The state of one call while facts are loaded. -/
 structure Session where
   compiled : Compiled
@@ -109,6 +128,10 @@ structure Session where
   program : Program
   facts : Nat := 0
   maxFacts : Nat
+  /-- The goal of a typed call (`elpi_run`, `elpi_validate`); empty for `elpi_query`. -/
+  pred : String := ""
+  args : Array GoalArg := #[]
+  output : Output := .text
   deriving Inhabited
 
 /-- The modules `name` accumulates, transitively, with the hash of their source. -/
@@ -124,28 +147,119 @@ partial def depHashes (stored : List Stored) (name : String) : List (String × S
   Schema.sortStrings names |>.filterMap fun n =>
     (stored.find? (·.name == n)).map fun m => (n, Schema.hex16 (Schema.fnv1a64 m.source))
 
+/-- The hash a run compares with the save: over the reached tables, or over the whole schema
+for a module saved before reached tables were recorded. -/
+def runHash (d : Derived) (schema : Schema) : String :=
+  if d.reached.isEmpty then Schema.hash schema else Schema.reachedHash d.reached schema
+
+/-- Find the compiled module in the cache, or regenerate the signature and compile it against
+the current schema. A schema change since the save gives a new key, so the module is
+recompiled in memory; if that fails, the run fails with the type error. -/
+-- @tg: implements:: [[openspec:schema-evolution#Lazy recheck on run]]
+def compiledFor (cache : HandleCache) (schema : Schema) (stored : List Stored) (name : String) :
+    Except String (Stored × Derived × Compiled × HandleCache) := do
+  let some m := stored.find? (·.name == name) | throw s!"no module named {name}"
+  let derived ← (do Derived.ofJson? (← Lean.Json.parse m.derived)).mapError fun e =>
+    s!"module {name} has no readable metadata ({e}); save it again"
+  let key : CacheKey :=
+    { name, version := m.version, sourceHash := Schema.hex16 (Schema.fnv1a64 m.source),
+      schemaHash := runHash derived schema, deps := depHashes stored name }
+  let (hit, cache) := cache.find? key
+  match hit with
+  | some c => return (m, derived, c, cache)
+  | none =>
+    let sig ← (Signature.ofSchema (Engine.reservedNames.contains ·) schema).mapError (s!"signature: {·}")
+    let libs := (stored.filter (·.name != name)).map fun s => (s.name, s.source)
+    let program ← (Engine.compile [(signatureUnit, sig.text), (name, m.source)] libs).mapError fun e =>
+      let changed := if m.schemaHash.isEmpty || m.schemaHash == key.schemaHash then ""
+        else " (the schema changed since the module was saved)"
+      s!"module {name}{changed}: {errorText e}"
+    let c : Compiled := { program, sig, mentioned := derived.callsGenerated }
+    return (m, derived, c, cache.insert key c)
+
 /-- Find or compile the module and start a session. Besides the tables the module mentions, the
 call scans the tables of generated predicates named in `goal`, so a debug query may ask about
 any of them. -/
 def prepare (cache : HandleCache) (schema : Schema) (stored : List Stored) (name : String)
     (maxFacts : Nat) (goal : String := "") : Except String (Session × HandleCache) := do
-  let some m := stored.find? (·.name == name) | throw s!"no module named {name}"
-  let key : CacheKey :=
-    { name, version := m.version, sourceHash := Schema.hex16 (Schema.fnv1a64 m.source),
-      schemaHash := Schema.hash schema, deps := depHashes stored name }
-  let (hit, cache) := cache.find? key
-  let (compiled, cache) ← match hit with
-    | some c => pure (c, cache)
-    | none => do
-      let sig ← (Signature.ofSchema (Engine.reservedNames.contains ·) schema).mapError (s!"signature: {·}")
-      let derived ← (do Derived.ofJson? (← Lean.Json.parse m.derived)).mapError fun e =>
-        s!"module {name} has no readable metadata ({e}); save it again"
-      let libs := (stored.filter (·.name != name)).map fun s => (s.name, s.source)
-      let program ← (Engine.compile [(signatureUnit, sig.text), (name, m.source)] libs).mapError errorText
-      let c : Compiled := { program, sig, mentioned := derived.callsGenerated }
-      pure (c, cache.insert key c)
+  let (_, _, compiled, cache) ← compiledFor cache schema stored name
   let scans := scansFor compiled.sig (compiled.mentioned ++ goalWords goal)
   return ({ compiled, scans, program := compiled.program, maxFacts }, cache)
+
+/-! ### Typed calls -/
+
+/-- A value for messages. -/
+partial def describeValue : Value → String
+  | .int i => s!"the integer {i}"
+  | .float b => s!"the float {Float.ofBits b}"
+  | .str s => s!"the string {s.quote}"
+  | .bool b => s!"the boolean {b}"
+  | .list _ => "a list"
+  | .struct _ => "a struct"
+  | .null => "NULL"
+
+/-- The goal arguments and output columns of `pred` called with `params`: argument `k` is the
+parameter `ink` when its mode is `i`, the output column `outk` when it is `o`. -/
+def bindArgs (sig : Signature) (pred : String) (psig : Elpi.Host.PredSig)
+    (params : List (String × Value)) : Except String (Array GoalArg × Array (String × Col)) := do
+  let inputs := (List.range psig.args.size).filterMap fun i =>
+    match psig.args[i]?.map (·.mode) with
+    | some Elpi.Mode.i => some s!"in{i + 1}"
+    | _ => none
+  for (n, _) in params do
+    unless inputs.contains n do
+      let takes := if inputs.isEmpty then "no parameters" else ", ".intercalate inputs
+      throw s!"unknown parameter {n}: {pred} takes {takes}"
+  let mut args : Array GoalArg := #[]
+  let mut cols : Array (String × Col) := #[]
+  for h : i in [0:psig.args.size] do
+    let a := psig.args[i]
+    let some col := colOfTy sig a.ty
+      | throw s!"argument {i + 1} of {pred} has type {a.ty}, which has no column mapping"
+    match a.mode with
+    | .i =>
+      let n := s!"in{i + 1}"
+      let some (_, v) := params.find? (·.1 == n)
+        | throw s!"missing parameter {n} of type {col.render}"
+      unless HasTypeC v col do
+        throw s!"parameter {n}: expected type {col.render}, got {describeValue v}"
+      args := args.push (.value (encodeC col v))
+    | .o =>
+      let n := s!"out{i + 1}"
+      args := args.push (.out n)
+      cols := cols.push (n, col)
+  return (args, cols)
+
+/-- The entry points of a module and of the modules it accumulates. -/
+def entriesOf (stored : List Stored) (name : String) (d : Derived) : List String :=
+  d.entries ++ (depHashes stored name).flatMap fun (n, _) =>
+    ((stored.find? (·.name == n)).map (Derived.ofStored · |>.entries)).getD []
+
+/-- `elpi_run`: find or compile the module and start a session for `pred`, with its output
+columns fixed. -/
+-- @tg: implements:: [[openspec:rule-execution#Typed entry points]]
+def prepareRun (cache : HandleCache) (schema : Schema) (stored : List Stored) (name pred : String)
+    (params : List (String × Value)) (maxFacts : Nat) : Except String (Session × HandleCache) := do
+  let (_, derived, compiled, cache) ← compiledFor cache schema stored name
+  let some psig := Engine.predSig? compiled.program pred | throw s!"module {name} has no predicate {pred}"
+  unless (entriesOf stored name derived).contains pred do
+    throw s!"predicate {pred} has no mode declaration; declare it with pred {pred} i:…, o:… to call it with elpi_run"
+  let (args, cols) ← bindArgs compiled.sig pred psig params
+  return ({ compiled, scans := scansFor compiled.sig compiled.mentioned, program := compiled.program,
+            maxFacts, pred, args, output := .typed cols }, cache)
+
+/-- `elpi_validate`, one module: a session for `violation S C X`. -/
+-- @tg: implements:: [[openspec:validation#Uniform validation report]]
+def prepareValidate (cache : HandleCache) (schema : Schema) (stored : List Stored) (name : String)
+    (maxFacts : Nat) (minSeverity : Severity) : Except String (Session × HandleCache) := do
+  let (m, derived, compiled, cache) ← compiledFor cache schema stored name
+  unless derived.validates do throw s!"module {name} does not declare violation"
+  let ctx : ReportCtx :=
+    { module := name, version := m.version, subjects := subjectCases compiled.sig
+      hasMessage := (Engine.predSig? compiled.program "violation_message").isSome, minSeverity }
+  return ({ compiled, scans := scansFor compiled.sig compiled.mentioned, program := compiled.program,
+            maxFacts, pred := "violation", args := #[.out "S", .out "C", .out "X"],
+            output := .report ctx }, cache)
 
 /-! ### Facts from column batches -/
 
@@ -242,11 +356,35 @@ structure Run where
   sliceSteps : Nat
   maxSolutions : Nat
   solutions : Nat := 0
+  /-- The program with the call's facts, for `violation_message`. -/
+  program : Program
+  output : Output := .text
+
+/-- A cell for the shim, in prefix form: `n` (NULL), `i<int>`, `f<float bits>`, `s<string>`,
+`b0`/`b1`, `l<count>` then the items, `t<count>` then the fields. -/
+partial def cellTokens : Value → Array String
+  | .null => #["n"]
+  | .int i => #[s!"i{i}"]
+  | .float b => #[s!"f{b.toNat}"]
+  | .str s => #["s" ++ s]
+  | .bool b => #[if b then "b1" else "b0"]
+  | .list xs => xs.foldl (fun acc x => acc ++ cellTokens x) #[s!"l{xs.length}"]
+  | .struct fs => fs.foldl (fun acc x => acc ++ cellTokens x) #[s!"t{fs.length}"]
+
+/-- The cells of one `elpi_run` row; an output left unbound is NULL. -/
+def rowCells (cols : Array (String × Col)) (bs : Array (String × ResultTerm)) : Except String (Array String) :=
+  cols.foldlM (init := #[]) fun acc (n, col) =>
+    match bs.find? (·.1 == n) with
+    | none | some (_, .unbound) => .ok (acc.push "n")
+    | some (_, t) => match decodeC col t with
+      | some v => .ok (acc ++ cellTokens v)
+      | none => .error s!"{n}: the solution term {t} is not a {col.render}"
 
 /-- One slice's outcome. -/
 inductive Step where
-  /-- A solution: each named variable with the JSON form of its binding. -/
-  | solution (bindings : Array (String × String)) (next : Run)
+  /-- A solution: for `elpi_query` each named variable and the JSON form of its binding,
+  flattened; for `elpi_run` the row's cells; for `elpi_validate` the report row. -/
+  | solution (items : Array String) (next : Run)
   /-- The slice ran out; check interrupt and deadline, then step again. -/
   | paused (next : Run)
   /-- The search ended: `true` when it ran to completion, `false` when `elpi_max_solutions`
@@ -265,7 +403,15 @@ private def located (e : Engine.Error) : String :=
 -- @tg: implements:: [[openspec:rule-execution#Fresh store per call]]
 def start (s : Session) (goal : String) (fuel sliceSteps maxSolutions : Nat) : Except String Run := do
   let q ← (Engine.parseGoal s.program goal fuel).mapError located
-  return { query := q, fuel, sliceSteps := max sliceSteps 1, maxSolutions }
+  return { query := q, fuel, sliceSteps := max sliceSteps 1, maxSolutions, program := s.program }
+
+/-- Build the goal of a typed call from terms, against the session's program with its facts. -/
+def startGoal (s : Session) (fuel sliceSteps maxSolutions : Nat) : Except String Run := do
+  let q ← (Engine.goal s.program s.pred s.args fuel).mapError located
+  let output := match s.output with
+    | .report ctx => .report { ctx with fuel }
+    | o => o
+  return { query := q, fuel, sliceSteps := max sliceSteps 1, maxSolutions, program := s.program, output }
 
 /-- Run one slice. -/
 -- @tg: implements:: [[openspec:rule-execution#Fuel-sliced execution]]
@@ -273,12 +419,20 @@ def start (s : Session) (goal : String) (fuel sliceSteps maxSolutions : Nat) : E
 def step (r : Run) : Step :=
   if r.solutions ≥ r.maxSolutions then .done false
   else
-    let ⟨q, fuel, n, maxSol, sols⟩ := r
-    match Engine.slice q n with
+    let fuel := r.fuel
+    match Engine.slice r.query r.sliceSteps with
     | .solution bs _ q' =>
-      .solution (bs.map fun (v, t) => (v, (Engine.toJson t).compress))
-        { query := q', fuel, sliceSteps := n, maxSolutions := maxSol, solutions := sols + 1 }
-    | .paused q' => .paused { query := q', fuel, sliceSteps := n, maxSolutions := maxSol, solutions := sols }
+      let next := { r with query := q', solutions := r.solutions + 1 }
+      match r.output with
+      | .text => .solution (bs.foldl (fun acc (v, t) => acc.push v |>.push (Engine.toJson t).compress) #[]) next
+      | .typed cols => match rowCells cols bs with
+        | .ok cells => .solution cells next
+        | .error e => .error e
+      | .report ctx => match reportRow r.program ctx bs with
+        | .ok (some row) => .solution row next
+        | .ok none => .paused { r with query := q' }
+        | .error e => .error e
+    | .paused q' => .paused { r with query := q' }
     | .exhausted => .done true
     | .error .outOfFuel =>
       .error s!"elpi_fuel ({fuel}) exhausted: the query needs more resolution steps; raise it with CALL elpi_fuel=<n>"
