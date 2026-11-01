@@ -32,8 +32,9 @@ if [ "$(uname -s)" = Darwin ]; then
   /usr/bin/clang -O2 -I.deps/cli -o "$T/stress" spike/stress.c -L.deps/cli -llbug -Wl,-rpath,"$PWD/.deps/cli"
   DYLD_PRINT_BINDINGS=1 "$T/stress" load "$T/b" "$EXT" > "$T/bind.log" 2>&1
   name=$(basename "$EXT")
-  into=$(grep -E "<[^/]+/bind#[0-9]+> -> 0x[0-9a-f]+ <$name/" "$T/bind.log" | grep -vc "<$name/bind" || true)
-  targets=$(grep -E "<$name/bind#" "$T/bind.log" | sed -E 's/.*-> 0x[0-9a-f]+ <([^/]+)\/.*/\1/' | sort -u)
+  # dyld writes "-> 0x… <lib/sym>" up to macOS 14 and "-> 0x… (lib/sym)" from macOS 15
+  into=$(grep -E "<[^/]+/bind#[0-9]+> -> 0x[0-9a-f]+ [<(]$name/" "$T/bind.log" | grep -vc "<$name/bind" || true)
+  targets=$(grep -E "<$name/bind#[0-9]+> -> 0x" "$T/bind.log" | sed -E 's/.*-> 0x[0-9a-f]+ [<(]([^/]+)\/.*/\1/' | sort -u)
   bad=$(echo "$targets" | grep -v -E '^(libc\+\+\.1\.dylib|libc\+\+abi\.dylib|libsystem_[a-z_]+\.dylib|libdyld\.dylib|libunwind\.dylib|libcommonCrypto\.dylib|liblbug[.0-9]*\.dylib|lbug)$' || true)
   [ "$into" = 0 ] || { echo "FAIL: $into binds from other images into the extension"; exit 1; }
   [ -z "$bad" ] || { echo "FAIL: extension binds into: $bad"; exit 1; }
