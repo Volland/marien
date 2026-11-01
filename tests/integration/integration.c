@@ -8,6 +8,8 @@
  * Env: MARIEN_MISMATCH_EXT, a build of the extension pinned to another LadybugDB version. */
 #ifdef __APPLE__
 #include <mach/mach.h>
+#else
+#include <malloc.h>
 #endif
 #include <pthread.h>
 #include <stdarg.h>
@@ -46,6 +48,9 @@ static long rss_kb(void) {
     task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &n);
     return (long)(info.resident_size / 1024);
 #else
+    /* glibc keeps freed memory in per-thread arenas (more of them on hosts with more cores);
+     * hand it back first, so RSS counts live memory: a leak is not freed and stays counted */
+    malloc_trim(0);
     long pages = 0, resident = 0;
     FILE *f = fopen("/proc/self/statm", "r");
     if (f) {
@@ -667,10 +672,12 @@ static int memory_returns(void) {
         CHECK(strcmp(r, "[\"int\",1500000]\n") == 0, "answer: %s", r);
         long after = rss_kb();
         if (after - before > peak) peak = after - before;
-        if (i == 0) first = after;
+        /* the heap reaches its working size over the first runs (one step, then flat), so the
+         * baseline is taken after two */
+        if (i == 1) first = after;
         last = after;
     }
-    printf("    rss after run 1: %ld MB, after run 10: %ld MB\n", first / 1024, last / 1024);
+    printf("    rss after run 2: %ld MB, after run 10: %ld MB\n", first / 1024, last / 1024);
     CHECK(last <= first + first / 10, "RSS grew from %ld to %ld KB", first, last);
     close_db(&d);
     return 1;

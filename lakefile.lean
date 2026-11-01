@@ -3,7 +3,7 @@ import Lake
 open System Lake DSL
 
 package marien where
-  version := v!"0.0.1"
+  version := v!"0.3.0"
   description := "LadybugDB extension that stores λProlog (ELPI) rules in the database and runs them with LeanElpi."
   license := "Apache-2.0"
   leanOptions := #[⟨`autoImplicit, false⟩]
