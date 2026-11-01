@@ -68,6 +68,7 @@ def load (s : Session) (title3 : String := "CEO") : IO Session := do
     | .rel rs =>
       if rs.plan.name == "ReportsTo" then
         s ← ok (addBatch s i #[#[str "Person"], #[int 7], #[int 100], #[str "Person"], #[int 3]]) "reports_to batch"
+    | .structural .. => pure ()
   return s
 
 /-- Every solution's items, to the end. -/

@@ -170,3 +170,23 @@ An extension that calls `getVersion` directly fails to load into the CLI with an
 
 - source:: `nm -gU` of the v0.22.1 CLI and liblbug (macOS arm64), and a failed `LOAD EXTENSION` in the CLI, 2026-11-01
 - constrains:: [[components#Extension shim]] {strength: must, note: "version symbols are looked up with dlsym at load time"}
+
+## Deep indexing scans the first-argument bucket
+
+LeanElpi's first-argument index keys a fact by the outer constructor of its first argument; a deeper `:index` only filters that bucket by hash. A lookup among loaded facts stays linear in their number.
+
+Every node term is `person <key>`, so all facts of a table share one bucket: a join at full scope is quadratic (one rule at 5000, 10000 and 20000 persons: 0.5, 2 and 8 seconds).
+
+- source:: `Elpi/Core/Index.lean` (`PredDB.select`) of the pinned lean-elpi, and timings with the CLI, 2026-11-01
+- constrains:: [[components#Executor]] {strength: must, note: "full-scope joins are quadratic"}
+- constrains:: [[components#Partition planner]] {strength: should, note: "small batches keep each store small"}
+- constrains:: [[decisions#Generated predicates are indexed to depth 2]]
+
+## Table function arguments are literals
+
+Every argument of a table function call must be a literal: `CALL elpi_run('c', 'q', NULL, $scope) RETURN *` fails to prepare with "has type PARAMETER but LITERAL was expected", even for a function that does not rewrite.
+
+A narrowed scope therefore cannot be a query parameter, as the rule-execution spec expects; a caller writes the key list into the statement.
+
+- source:: a prepared statement with a bound STRUCT parameter against LadybugDB v0.22.1 liblbug (macOS arm64), 2026-11-01
+- constrains:: [[components#Extension shim]] {strength: must, note: "the scope of elpi_run and elpi_validate is a literal"}

@@ -7,9 +7,13 @@
 // all. LadybugDB only rewrites a bare `CALL f(...)`, and only with literal arguments.
 //
 // Reads that solve (elpi_query, elpi_run, elpi_validate) materialize the facts and run the goal
-// in fuel slices on their first call, then hand out the buffered rows.
+// in fuel slices on their first call, then hand out the buffered rows. An entry point with an
+// accepted partition runs batch by batch, each batch in a fresh store; a narrowed scope restricts
+// the rows the scanner reads.
+#include <algorithm>
 #include <chrono>
 #include <dlfcn.h>
+#include <optional>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -63,6 +67,7 @@ constexpr Option options[] = {
     {"elpi_max_facts", 10000000},   // facts materialized per call
     {"elpi_slice_steps", 100000},   // steps between interrupt and deadline checks
     {"elpi_cache_size", 64},        // compiled modules kept in memory
+    {"elpi_partition_batch", 10000}, // anchors per batch of a partitioned run; key rows per bucket
 };
 
 uint64_t setting(ClientContext& ctx, const char* name) {
@@ -385,18 +390,19 @@ std::function<void()> interruptCheck(ClientContext& ctx) {
     };
 }
 
-// Materialize the session's tables (consuming the session) and start its typed goal.
+// Materialize the session's tables (consuming the session), reading the rows `filter` allows,
+// and start its typed goal.
 marien_run* startTyped(ClientContext& ctx, marien_session* s, const std::function<void()>& check,
-    const std::string& fn) {
+    const std::string& fn, const RowFilter* filter, uint64_t maxSolutions) {
     try {
-        materialize(ctx, s, check);
+        materialize(ctx, s, check, filter);
     } catch (...) {
         marien_bridge_free_session(s);
         throw;
     }
     marien_str err{nullptr, 0};
     marien_run* r = marien_bridge_goal_start(s, setting(ctx, "elpi_fuel"), setting(ctx, "elpi_slice_steps"),
-        setting(ctx, "elpi_max_solutions"), &err);
+        maxSolutions, &err);
     if (!r) throw RuntimeException(fn + ": " + takeString(err));
     return r;
 }
@@ -436,6 +442,131 @@ bool solve(marien_run* r, const std::function<void()>& check,
         }
     }
     return exhausted;
+}
+
+bool isFactLimit(const std::string& msg) { return msg.find("elpi_max_facts (") != std::string::npos; }
+
+// Solve a typed session (consumed) to the end: at full scope, on the rows `scope` allows, or
+// batch by batch when its entry point has an accepted partition. Each batch gets a fresh store
+// and its own fuel, fact budget and deadline; a batch whose neighbourhood exceeds elpi_max_facts
+// is split, down to one anchor. Any failing batch fails the whole call. `onRow` gets each row.
+// @tg: implements:: [[openspec:partitioning#Anchor partitions]]
+// @tg: implements:: [[openspec:partitioning#Key partitions]]
+// @tg: implements:: [[openspec:partitioning#Dynamic entry points stay whole]] {confidence: partial, note: "a session without an accepted partition runs at full scope"}
+void runTyped(ClientContext& ctx, marien_session* s, const RowFilter* scope, const std::string& fn,
+    const std::function<void(std::vector<std::string>&)>& onRow) {
+    std::vector<std::string> part;
+    uint64_t maxSolutions = 0, batch = 0;
+    try {
+        part = takeStrings(marien_bridge_partition(s), fn);
+        maxSolutions = setting(ctx, "elpi_max_solutions");
+        batch = std::max<uint64_t>(1, setting(ctx, "elpi_partition_batch"));
+    } catch (...) {
+        marien_bridge_free_session(s);
+        throw;
+    }
+    uint64_t found = 0;
+    auto counted = [&](std::vector<std::string>& items) {
+        found++;
+        onRow(items);
+    };
+    if (part.empty()) {
+        auto check = interruptCheck(ctx);
+        solve(startTyped(ctx, s, check, fn, scope, maxSolutions), check, counted, fn);
+        return;
+    }
+    struct Base {
+        marien_session* s;
+        ~Base() { marien_bridge_free_session(s); }
+    } base{s};
+    // errors name the batch (or bucket): "<fn>: batch 3 of 5: ..."
+    auto runOne = [&](marien_session* bs, const RowFilter& f, const std::string& where) {
+        if (found >= maxSolutions) {
+            marien_bridge_free_session(bs);
+            return;
+        }
+        auto check = interruptCheck(ctx);
+        auto label = fn + ": " + where;
+        solve(startTyped(ctx, bs, check, label, &f, maxSolutions - found), check, counted, label);
+    };
+    auto check = interruptCheck(ctx);
+    if (part.at(0) == "anchor") {
+        const auto& table = part.at(1);
+        uint64_t radius = std::stoull(part.at(2));
+        std::vector<std::pair<std::string, bool>> steps;
+        for (size_t i = 3; i + 1 < part.size(); i += 2) steps.emplace_back(part[i], part[i + 1] == "outgoing");
+        auto keys = keysByOffset(ctx, table, check);
+        std::vector<uint64_t> anchors;
+        for (uint64_t o = 0; o < keys.size(); o++) {
+            if (keys[o]) anchors.push_back(o);
+        }
+        size_t nb = 0;
+        uint64_t* sizes = marien_bridge_partition_batches(batch, anchors.size(), &nb);
+        std::vector<uint64_t> sz(sizes, sizes + nb);
+        free(sizes);
+        size_t index = 0;
+        std::function<void(size_t, size_t)> runAnchors = [&](size_t from, size_t to) {
+            std::vector<uint64_t> slice(anchors.begin() + from, anchors.begin() + to);
+            auto f = neighbourhood(ctx, table, slice, radius, steps, check);
+            auto* kv = marien_bridge_values_new(slice.size());
+            for (auto o : slice) pushValue(kv, *keys[o]);
+            try {
+                runOne(marien_bridge_session_batch(s, kv), f,
+                    "batch " + std::to_string(index + 1) + " of " + std::to_string(sz.size()));
+            } catch (RuntimeException& e) {
+                if (!isFactLimit(e.what())) throw;
+                if (to - from == 1) {
+                    throw RuntimeException(fn + ": the neighbourhood of " + table + " " + keys[slice[0]]->toString() +
+                                           " alone exceeds elpi_max_facts; raise it with CALL elpi_max_facts=<n>");
+                }
+                size_t mid = from + (to - from) / 2;
+                runAnchors(from, mid);
+                runAnchors(mid, to);
+            }
+        };
+        size_t at = 0;
+        for (; index < sz.size(); index++) {
+            runAnchors(at, at + sz[index]);
+            at += sz[index];
+        }
+    } else {
+        const auto& table = part.at(1);
+        const auto& prop = part.at(2);
+        auto values = columnByOffset(ctx, table, prop, check);
+        uint64_t nonNull = 0;
+        auto* kv = marien_bridge_values_new(values.size());
+        for (auto& v : values) {
+            if (v && !v->isNull()) {
+                nonNull++;
+                pushValue(kv, *v);
+            } else {
+                marien_bridge_push_null(kv);
+            }
+        }
+        uint64_t k = std::max<uint64_t>(1, (nonNull + batch - 1) / batch);
+        size_t nk = 0;
+        uint64_t* bk = marien_bridge_partition_buckets(k, kv, &nk);
+        std::vector<uint64_t> bucket(bk, bk + nk);
+        free(bk);
+        for (uint64_t b = 0; b < k; b++) {
+            RowFilter f;
+            f.restrictAll = true;
+            auto& allowed = f.allowed[table];
+            allowed.assign(bucket.size(), false);
+            bool any = false;
+            for (size_t o = 0; o < bucket.size(); o++) {
+                if (bucket[o] == b) allowed[o] = any = true;
+            }
+            if (!any) continue;
+            try {
+                runOne(marien_bridge_session_fresh(s), f, "bucket " + std::to_string(b + 1) + " of " + std::to_string(k));
+            } catch (RuntimeException& e) {
+                if (!isFactLimit(e.what())) throw;
+                throw RuntimeException(fn + ": a bucket of " + table + "." + prop +
+                                       " exceeds elpi_max_facts; raise it, or lower elpi_partition_batch");
+            }
+        }
+    }
 }
 
 // Run the whole query: materialize, then solve in slices, checking LadybugDB's interrupt flag
@@ -674,13 +805,15 @@ struct RunBindData final : TableFuncBindData {
     std::vector<Value> paramValues;
     std::vector<LogicalType> types;
     std::vector<std::string> names;
+    // the narrowed scope; its rows get the extra column narrowed = true
+    std::optional<Value> scope;
     RunBindData(lbug::binder::expression_vector cols, std::string m, std::string p, std::vector<std::string> pn,
-        std::vector<Value> pv, std::vector<LogicalType> ts, std::vector<std::string> ns)
+        std::vector<Value> pv, std::vector<LogicalType> ts, std::vector<std::string> ns, std::optional<Value> sc)
         : TableFuncBindData{std::move(cols)}, module{std::move(m)}, pred{std::move(p)}, paramNames{std::move(pn)},
-          paramValues{std::move(pv)}, types{std::move(ts)}, names{std::move(ns)} {}
+          paramValues{std::move(pv)}, types{std::move(ts)}, names{std::move(ns)}, scope{std::move(sc)} {}
     std::unique_ptr<TableFuncBindData> copy() const override {
         return std::make_unique<RunBindData>(columns, module, pred, paramNames, paramValues, LogicalType::copy(types),
-            names);
+            names, scope);
     }
 };
 
@@ -702,7 +835,7 @@ std::shared_ptr<TableFuncSharedState> rowsInitShared(const TableFuncInitSharedSt
 
 // A session for the call; the parameters are converted afresh each time.
 marien_session* runSession(ClientContext& ctx, const std::string& module, const std::string& pred,
-    const std::vector<std::string>& names, const std::vector<Value>& values) {
+    const std::vector<std::string>& names, const std::vector<Value>& values, bool narrowed) {
     auto catalog = catalogJson(ctx);
     auto stored = storedModulesJson(ctx);
     auto* vals = marien_bridge_values_new(values.size());
@@ -710,20 +843,24 @@ marien_session* runSession(ClientContext& ctx, const std::string& module, const 
     auto ptrs = cstrs(names);
     marien_str err{nullptr, 0};
     marien_session* s = marien_bridge_run_prepare(catalog.c_str(), stored.c_str(), module.c_str(), pred.c_str(),
-        ptrs.data(), vals, setting(ctx, "elpi_max_facts"), setting(ctx, "elpi_cache_size"), &err);
+        ptrs.data(), vals, setting(ctx, "elpi_max_facts"), setting(ctx, "elpi_cache_size"), narrowed ? 1 : 0, &err);
     if (!s) throw RuntimeException("elpi_run: " + takeString(err));
     return s;
 }
 
 // Output columns are fixed here, from the predicate's signature, before anything is solved.
 // @tg: implements:: [[openspec:rule-execution#Typed entry points]]
-std::unique_ptr<TableFuncBindData> runBind(const ClientContext* c, const TableFuncBindInput* in, bool withParams) {
+std::unique_ptr<TableFuncBindData> runBind(const ClientContext* c, const TableFuncBindInput* in, bool withParams,
+    bool withScope) {
     auto& ctx = const_cast<ClientContext&>(*c);
     auto module = literal(in, 0, "elpi_run");
     auto pred = literal(in, 1, "elpi_run");
     std::vector<std::string> paramNames;
     std::vector<Value> paramValues;
-    if (withParams) {
+    std::optional<Value> scope;
+    if (withScope) scope = in->getValue(3);
+    // NULL parameters: none (a call with a scope and no parameters)
+    if (withParams && !in->getValue(2).isNull()) {
         auto p = in->getValue(2);
         auto* scratch = marien_bridge_values_new(0);
         try {
@@ -741,7 +878,7 @@ std::unique_ptr<TableFuncBindData> runBind(const ClientContext* c, const TableFu
             }
         }
     }
-    marien_session* s = runSession(ctx, module, pred, paramNames, paramValues);
+    marien_session* s = runSession(ctx, module, pred, paramNames, paramValues, scope.has_value());
     std::vector<std::string> names;
     std::vector<LogicalType> types;
     for (size_t i = 0, n = marien_bridge_column_count(s); i < n; i++) {
@@ -751,9 +888,15 @@ std::unique_ptr<TableFuncBindData> runBind(const ClientContext* c, const TableFu
         types.push_back(parseType(toks, k));
     }
     marien_bridge_free_session(s);
-    auto cols = columns(in, names, LogicalType::copy(types));
+    auto colNames = names;
+    auto colTypes = LogicalType::copy(types);
+    if (scope) {
+        colNames.push_back("narrowed");
+        colTypes.push_back(LogicalType::BOOL());
+    }
+    auto cols = columns(in, colNames, std::move(colTypes));
     return std::make_unique<RunBindData>(std::move(cols), module, pred, std::move(paramNames), std::move(paramValues),
-        std::move(types), std::move(names));
+        std::move(types), std::move(names), std::move(scope));
 }
 
 offset_t runFunc(const TableFuncInput& input, TableFuncOutput& output) {
@@ -763,16 +906,17 @@ offset_t runFunc(const TableFuncInput& input, TableFuncOutput& output) {
     if (!st.computed) {
         st.computed = true;
         auto& ctx = *input.context->clientContext;
-        auto check = interruptCheck(ctx);
-        marien_run* r = startTyped(ctx, runSession(ctx, bd.module, bd.pred, bd.paramNames, bd.paramValues), check,
-            "elpi_run");
         try {
-            solve(r, check, [&](std::vector<std::string>& cells) {
+            std::optional<RowFilter> filter;
+            if (bd.scope) filter = scopeFilter(ctx, *bd.scope, interruptCheck(ctx), "elpi_run");
+            marien_session* s = runSession(ctx, bd.module, bd.pred, bd.paramNames, bd.paramValues, bd.scope.has_value());
+            runTyped(ctx, s, filter ? &*filter : nullptr, "elpi_run", [&](std::vector<std::string>& cells) {
                 std::vector<Value> row;
                 size_t k = 0;
                 for (size_t c = 0; c < bd.types.size(); c++) row.push_back(parseCell(bd.types[c], cells, k, bd.names[c]));
+                if (bd.scope) row.emplace_back(true);
                 st.rows.push_back(std::move(row));
-            }, "elpi_run");
+            });
         } catch (...) {
             st.rows.clear();
             throw;
@@ -801,9 +945,11 @@ struct ElpiRun {
     static function_set getFunctionSet() {
         function_set set;
         set.push_back(make({LogicalTypeID::STRING, LogicalTypeID::STRING},
-            [](const ClientContext* c, const TableFuncBindInput* in) { return runBind(c, in, false); }));
+            [](const ClientContext* c, const TableFuncBindInput* in) { return runBind(c, in, false, false); }));
         set.push_back(make({LogicalTypeID::STRING, LogicalTypeID::STRING, LogicalTypeID::ANY},
-            [](const ClientContext* c, const TableFuncBindInput* in) { return runBind(c, in, true); }));
+            [](const ClientContext* c, const TableFuncBindInput* in) { return runBind(c, in, true, false); }));
+        set.push_back(make({LogicalTypeID::STRING, LogicalTypeID::STRING, LogicalTypeID::ANY, LogicalTypeID::ANY},
+            [](const ClientContext* c, const TableFuncBindInput* in) { return runBind(c, in, true, true); }));
         return set;
     }
 };
@@ -814,20 +960,27 @@ struct ValidateBindData final : TableFuncBindData {
     std::vector<std::string> modules;
     bool all;
     std::string minSeverity;
-    ValidateBindData(lbug::binder::expression_vector cols, std::vector<std::string> m, bool a, std::string s)
-        : TableFuncBindData{std::move(cols)}, modules{std::move(m)}, all{a}, minSeverity{std::move(s)} {}
+    std::optional<Value> scope;
+    ValidateBindData(lbug::binder::expression_vector cols, std::vector<std::string> m, bool a, std::string s,
+        std::optional<Value> sc)
+        : TableFuncBindData{std::move(cols)}, modules{std::move(m)}, all{a}, minSeverity{std::move(s)},
+          scope{std::move(sc)} {}
     std::unique_ptr<TableFuncBindData> copy() const override { return std::make_unique<ValidateBindData>(*this); }
 };
 
 std::unique_ptr<TableFuncBindData> validateBind(const TableFuncBindInput* in, std::vector<std::string> modules,
-    bool all, std::string minSeverity) {
+    bool all, std::string minSeverity, std::optional<Value> scope = std::nullopt) {
     std::vector<LogicalType> types;
     types.push_back(LogicalType::STRING());
     types.push_back(LogicalType::INT64());
     for (int i = 0; i < 5; i++) types.push_back(LogicalType::STRING());
-    return std::make_unique<ValidateBindData>(
-        columns(in, {"module", "version", "severity", "code", "message", "subject_label", "subject_pk"}, std::move(types)),
-        std::move(modules), all, std::move(minSeverity));
+    std::vector<std::string> names{"module", "version", "severity", "code", "message", "subject_label", "subject_pk"};
+    if (scope) {
+        names.push_back("narrowed");
+        types.push_back(LogicalType::BOOL());
+    }
+    return std::make_unique<ValidateBindData>(columns(in, std::move(names), std::move(types)), std::move(modules), all,
+        std::move(minSeverity), std::move(scope));
 }
 
 // Every module runs to the end before any row is returned: a module that fails fails the call,
@@ -847,28 +1000,30 @@ offset_t validateFunc(const TableFuncInput& input, TableFuncOutput& output) {
         auto order = takeStrings(marien_bridge_validate_order(stored.c_str(), ptrs.data(), ptrs.size(), bd.all ? 1 : 0),
             "elpi_validate");
         try {
+            std::optional<RowFilter> filter;
+            if (bd.scope) filter = scopeFilter(ctx, *bd.scope, check, "elpi_validate");
             for (auto& m : order) {
                 auto fn = "elpi_validate: module " + m;
                 marien_str err{nullptr, 0};
                 marien_session* s = marien_bridge_validate_prepare(catalog.c_str(), stored.c_str(), m.c_str(),
-                    bd.minSeverity.c_str(), setting(ctx, "elpi_max_facts"), setting(ctx, "elpi_cache_size"), &err);
+                    bd.minSeverity.c_str(), setting(ctx, "elpi_max_facts"), setting(ctx, "elpi_cache_size"),
+                    bd.scope ? 1 : 0, &err);
                 if (!s) throw RuntimeException(fn + ": " + takeString(err));
-                marien_run* r;
                 try {
-                    r = startTyped(ctx, s, check, fn);
+                    runTyped(ctx, s, filter ? &*filter : nullptr, fn, [&](std::vector<std::string>& row) {
+                        std::vector<Value> out;
+                        out.emplace_back(LogicalType::STRING(), row.at(0));
+                        out.emplace_back(static_cast<int64_t>(std::stoll(row.at(1))));
+                        for (size_t c = 2; c < 7; c++) out.emplace_back(LogicalType::STRING(), row.at(c));
+                        if (bd.scope) out.emplace_back(true);
+                        st.rows.push_back(std::move(out));
+                    });
                 } catch (RuntimeException& e) {
                     // a materialization error does not carry the module name yet
                     std::string msg = e.what();
                     if (msg.find(fn) == std::string::npos) throw RuntimeException(fn + ": " + msg);
                     throw;
                 }
-                solve(r, check, [&](std::vector<std::string>& row) {
-                    std::vector<Value> out;
-                    out.emplace_back(LogicalType::STRING(), row.at(0));
-                    out.emplace_back(static_cast<int64_t>(std::stoll(row.at(1))));
-                    for (size_t c = 2; c < 7; c++) out.emplace_back(LogicalType::STRING(), row.at(c));
-                    st.rows.push_back(std::move(out));
-                }, fn);
             }
         } catch (...) {
             st.rows.clear();
@@ -906,6 +1061,11 @@ struct ElpiValidate {
         set.push_back(make({LogicalTypeID::ANY, LogicalTypeID::STRING}, [](const ClientContext*, const TableFuncBindInput* in) {
             return validateBind(in, stringList(in, 0, "elpi_validate"), false, literal(in, 1, "elpi_validate"));
         }));
+        set.push_back(make({LogicalTypeID::ANY, LogicalTypeID::STRING, LogicalTypeID::ANY},
+            [](const ClientContext*, const TableFuncBindInput* in) {
+                return validateBind(in, stringList(in, 0, "elpi_validate"), false, literal(in, 1, "elpi_validate"),
+                    in->getValue(2));
+            }));
         return set;
     }
 };

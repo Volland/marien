@@ -44,6 +44,7 @@ scripts/check-exports.sh "$L"
 scripts/check-size.sh "$L"
 echo "== integration"
 tests/integration/run.sh
+tests/differential/run.sh "${PROPERTY_CASES:-1000}"
 scripts/test-install.sh "$L"
 # hand the extension to the host when it mounted /out (tests/linux/docker.sh)
 if [ -d /out ] && [ -w /out ]; then cp "$L" /out/libmarien.lbug_extension; fi

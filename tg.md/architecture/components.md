@@ -30,6 +30,7 @@ Registers `elpi_init`, `elpi_save`, `elpi_drop`, `elpi_import` and `elpi_recheck
 - motivated_by:: [[decisions#Releases built from one matrix script]]
 - introduced_by:: [[changes#spike-lean-runtime-in-ladybug]]
 - changed_by:: [[changes#add-typed-validation]] {note: "elpi_run, elpi_validate, elpi_recheck, the version check and the release build"}
+- changed_by:: [[changes#add-analysis-and-partitioning]] {note: "scope overloads, the narrowed column, elpi_partition_batch, runTyped"}
 
 ## Runtime bridge
 
@@ -71,7 +72,7 @@ Reads LadybugDB's catalog (node tables, rel tables, FROM/TO pairs, property type
 
 Scans node and rel tables, or the neighbourhood of a batch of anchors, through LadybugDB's storage and graph API in the calling transaction. Source: `shim/scan.cpp`.
 
-Node tables are scanned with `NodeTableScanState` a vector at a time; rel tables through `graph::OnDiskGraph`, with each endpoint's primary keys gathered by offset first. Neighbourhood scans (radius and directions from the analysis) arrive with partitioning in M3.
+Node tables are scanned with `NodeTableScanState` a vector at a time; rel tables through `graph::OnDiskGraph`, with each endpoint's primary keys gathered by offset first. M3: a `RowFilter` restricts which node rows are read, and an edge is read only between allowed endpoints; `neighbourhood` walks the recorded directions breadth first from a batch of anchors, `scopeFilter` turns a narrowed scope into a filter, and `edgeOffsets` feeds the structural facts.
 
 - module:: shim/scan.cpp
 - milestone:: M1
@@ -81,6 +82,7 @@ Node tables are scanned with `NodeTableScanState` a vector at a time; rel tables
 - motivated_by:: [[decisions#Catalog as JSON, rows as column batches]]
 - motivated_by:: [[decisions#Edge ids are internal ids]]
 - introduced_by:: [[changes#add-tracer-bullet]]
+- changed_by:: [[changes#add-analysis-and-partitioning]] {note: "row filters, neighbourhoods, scopes"}
 
 ## Schema model
 
@@ -112,6 +114,8 @@ Every signature starts with the validation protocol's `severity` and `subject` k
 - motivated_by:: [[decisions#Subject as a generated union kind]]
 - introduced_by:: [[changes#add-tracer-bullet]]
 - changed_by:: [[changes#add-typed-validation]] {note: "protocol declarations and subject constructors"}
+- motivated_by:: [[decisions#Generated predicates are indexed to depth 2]]
+- changed_by:: [[changes#add-analysis-and-partitioning]] {note: "structural predicates and index declarations"}
 
 ## Value codec
 
@@ -148,6 +152,7 @@ Source text is stored byte-exact; `unescape (escape s) = s` and the absence of a
 - motivated_by:: [[decisions#Runs recompile in memory; only elpi_recheck writes]]
 - introduced_by:: [[changes#add-tracer-bullet]]
 - changed_by:: [[changes#add-typed-validation]] {note: "reached tables and hash, the violation signature check, status and error, elpi_recheck"}
+- changed_by:: [[changes#add-analysis-and-partitioning]] {note: "the rule analyzer at save and recheck, verdicts in derived"}
 
 ## Handle cache
 
@@ -168,7 +173,7 @@ From M2 the schema hash in the key is the module's reached-table hash, so DDL on
 
 Runs queries and entry points: materializes facts, solves in fuel slices with interrupt, deadline and budget checks, and decodes rows. Source: `Marien/Exec/Run.lean`.
 
-M1 ships the untyped `elpi_query`; M2 adds typed `elpi_run` (`prepareRun`, `bindArgs`, `startGoal`), one module of `elpi_validate` (`prepareValidate`) and the lazy recheck (`compiledFor`); M3 adds narrowed scope for monotone entry points.
+M1 ships the untyped `elpi_query`; M2 adds typed `elpi_run` (`prepareRun`, `bindArgs`, `startGoal`), one module of `elpi_validate` (`prepareValidate`) and the lazy recheck (`compiledFor`); M3: each entry point loads the tables its verdict says it reaches (`reachedBy`); `checkScope` refuses a scope at bind time unless the entry point is monotone; a partitioned session solves batch by batch, each in a fresh store, keeping rows whose subject is a batch anchor (`Session.forBatch`, `keeps`).
 
 - module:: Marien.Exec.Run
 - milestone:: M1
@@ -183,6 +188,8 @@ M1 ships the untyped `elpi_query`; M2 adds typed `elpi_run` (`prepareRun`, `bind
 - motivated_by:: [[decisions#Runs recompile in memory; only elpi_recheck writes]]
 - introduced_by:: [[changes#add-tracer-bullet]]
 - changed_by:: [[changes#add-typed-validation]] {note: "elpi_run, elpi_validate sessions, lazy recheck"}
+- motivated_by:: [[decisions#The subject is the anchor]]
+- changed_by:: [[changes#add-analysis-and-partitioning]] {note: "verdict-driven scans, scope check, partitioned sessions"}
 
 ## Validator
 
@@ -190,18 +197,23 @@ Runs the `violation` protocol across modules and returns the uniform validation 
 
 M2: `validationOrder` picks the listed modules that declare `violation` (all, by name, when the list is omitted), `reportRow` decodes a solution with the subject codec and asks `violation_message` for the message, and `keep` applies the severity threshold (`filter_sound`). Every module runs at full scope; a failing one fails the call.
 
+M3: a module whose `violation` has an accepted partition runs batch by batch; a scope is refused unless `violation` is monotone, and rows on a scope carry `narrowed = true`.
+
 - module:: Marien.Exec.Validate
 - milestone:: M2
 - depends_on:: [[components#Executor]]
 - motivated_by:: [[decisions#Validation protocol]]
 - motivated_by:: [[decisions#Subject as a generated union kind]]
 - introduced_by:: [[changes#add-typed-validation]]
+- changed_by:: [[changes#add-analysis-and-partitioning]] {note: "partitioned and narrowed runs"}
 
 ## Rule analyzer
 
 Per entry point: reached predicates, monotonicity, dynamic inference and the locality check that permits anchor partitions. Source: `Marien/Analysis/`.
 
 Soundness of monotonicity and locality is a stretch theorem; property tests guard it in v1.
+
+`Reach` builds the call graph (variable calls over-approximated by type) and its closure (`reach_closed`); `Monotone` finds the first `not`, cut, `forall` or `findall` over the database and the `=>` goals that make an entry point dynamic; `Locality` inlines helpers and checks anchor and key partitions; `Verdict` stores the result with the module.
 
 - module:: Marien.Analysis
 - milestone:: M3
@@ -210,12 +222,17 @@ Soundness of monotonicity and locality is a stretch theorem; property tests guar
 - motivated_by:: [[decisions#Partitioned validation]]
 - motivated_by:: [[decisions#Staged rule generation over a reflected schema]]
 - introduced_by:: [[changes#add-analysis-and-partitioning]]
+- motivated_by:: [[decisions#Analysis on the clause AST at save and recheck]]
+- motivated_by:: [[decisions#Locality by inlining, conservatively]]
+- motivated_by:: [[decisions#Rejected partitions fail the save]]
 
 ## Partition planner
 
 Chooses full, anchor or key partitioning from the analysis, batches anchors and drives one fresh store per batch. Source: `Marien/Exec/Partition.lean`.
 
 Coverage (every anchor in exactly one batch) and single emission of each violation are theorems.
+
+`batches` and `bucketOf` are the code the shim calls (`marien_partition_batches`, `marien_partition_buckets`). The shim's `runTyped` drives the batches with a fresh store, fuel, fact budget and deadline each, splits a batch that overflows `elpi_max_facts` down to one anchor and names a failing batch.
 
 - module:: Marien.Exec.Partition
 - milestone:: M3
@@ -225,10 +242,14 @@ Coverage (every anchor in exactly one batch) and single emission of each violati
 - depends_on:: [[components#Structural facts]]
 - motivated_by:: [[decisions#Partitioned validation]]
 - introduced_by:: [[changes#add-analysis-and-partitioning]]
+- motivated_by:: [[decisions#Batches and buckets are cut in Lean]]
+- motivated_by:: [[decisions#The subject is the anchor]]
 
 ## Structural facts
 
 Computes SCC and WCC over rel tables in the calling transaction and hands them over as facts such as `in_cycle` and `component`. Source: `shim/structure.cpp`.
+
+Tarjan's algorithm (without recursion) gives `in_cycle` (a component with another node, or a self-edge); union-find gives `component`, numbered in the order of each component's first row. Only rows the call's filter allows become facts.
 
 - module:: shim/structure.cpp
 - milestone:: M3
@@ -236,6 +257,7 @@ Computes SCC and WCC over rel tables in the calling transaction and hands them o
 - motivated_by:: [[decisions#Partitioned validation]]
 - motivated_by:: [[decisions#Scan tables in the calling transaction]]
 - introduced_by:: [[changes#add-analysis-and-partitioning]]
+- motivated_by:: [[decisions#Structural facts from Marien's own graph routines]]
 
 ## Schema reflector
 
@@ -285,12 +307,15 @@ Generators of random schemas, graphs and modules, the differential properties, e
 
 The Soufflé oracle arrives in M5.
 
+M3: `tests/M3.lean` covers the analyzer and the planner; `tests/Property/` holds the seeded generator, its unit tests and the Lean model that measures rejections; `tests/differential/` runs partition equivalence and narrowing against an embedded LadybugDB.
+
 - module:: tests
 - milestone:: M3
 - depends_on:: [[components#Executor]]
 - depends_on:: [[components#Partition planner]]
 - motivated_by:: [[decisions#Differential testing with an oracle]]
 - introduced_by:: [[changes#add-analysis-and-partitioning]]
+- motivated_by:: [[decisions#Differential properties with a Lean generator and a C runner]]
 
 ## Statement extension
 

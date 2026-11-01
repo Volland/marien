@@ -41,12 +41,17 @@ extern lean_object *marien_query_step(lean_object *);
 extern lean_object *marien_cache_misses(lean_object *);
 extern lean_object *marien_recheck(lean_object *, lean_object *, lean_object *, uint8_t);
 extern lean_object *marien_run_prepare(lean_object *, lean_object *, lean_object *, lean_object *,
-                                       lean_object *, lean_object *, uint64_t, uint64_t);
+                                       lean_object *, lean_object *, uint64_t, uint64_t, uint8_t);
 extern lean_object *marien_session_columns(lean_object *);
 extern lean_object *marien_validate_order(lean_object *, lean_object *, uint8_t);
 extern lean_object *marien_validate_prepare(lean_object *, lean_object *, lean_object *, lean_object *,
-                                            uint64_t, uint64_t);
+                                            uint64_t, uint64_t, uint8_t);
 extern lean_object *marien_goal_start(lean_object *, uint64_t, uint64_t, uint64_t);
+extern lean_object *marien_session_partition(lean_object *);
+extern lean_object *marien_session_batch(lean_object *, lean_object *);
+extern lean_object *marien_session_fresh(lean_object *);
+extern lean_object *marien_partition_batches(uint64_t, uint64_t);
+extern lean_object *marien_partition_buckets(uint64_t, lean_object *);
 
 /* --- Runtime ------------------------------------------------------------------------- */
 
@@ -258,22 +263,74 @@ marien_session *marien_bridge_prepare(const char *catalog, const char *modules, 
 marien_session *marien_bridge_run_prepare(const char *catalog, const char *modules, const char *name,
                                           const char *pred, const char *const *param_names,
                                           marien_values *param_values, uint64_t max_facts,
-                                          uint64_t cache_size, marien_str *error) {
+                                          uint64_t cache_size, int narrowed, marien_str *error) {
     ensure_thread();
     lean_object *values = param_values->arr;
     size_t n = lean_array_size(values);
     free(param_values);
     return take_session(marien_run_prepare(mk_str(catalog), mk_str(modules), mk_str(name), mk_str(pred),
-                                           mk_str_array(param_names, n), values, max_facts, cache_size),
+                                           mk_str_array(param_names, n), values, max_facts, cache_size,
+                                           narrowed ? 1 : 0),
                         error);
 }
 
 marien_session *marien_bridge_validate_prepare(const char *catalog, const char *modules, const char *name,
                                                const char *min_severity, uint64_t max_facts,
-                                               uint64_t cache_size, marien_str *error) {
+                                               uint64_t cache_size, int narrowed, marien_str *error) {
     ensure_thread();
     return take_session(marien_validate_prepare(mk_str(catalog), mk_str(modules), mk_str(name),
-                                                mk_str(min_severity), max_facts, cache_size), error);
+                                                mk_str(min_severity), max_facts, cache_size,
+                                                narrowed ? 1 : 0), error);
+}
+
+/* --- Partitions ---------------------------------------------------------------------- */
+
+marien_strings marien_bridge_partition(marien_session *s) {
+    ensure_thread();
+    lean_inc(s->obj);
+    return array_strings(marien_session_partition(s->obj));
+}
+
+static marien_session *wrap_session(lean_object *obj) {
+    marien_session *r = malloc(sizeof *r);
+    r->obj = obj;
+    return r;
+}
+
+marien_session *marien_bridge_session_batch(marien_session *base, marien_values *keys) {
+    ensure_thread();
+    lean_object *arr = keys->arr;
+    free(keys);
+    lean_inc(base->obj);
+    return wrap_session(marien_session_batch(base->obj, arr));
+}
+
+marien_session *marien_bridge_session_fresh(marien_session *base) {
+    ensure_thread();
+    lean_inc(base->obj);
+    return wrap_session(marien_session_fresh(base->obj));
+}
+
+/* An Array UInt64, consumed, as a malloc'ed C array. */
+static uint64_t *take_u64s(lean_object *arr, size_t *len) {
+    size_t n = lean_array_size(arr);
+    uint64_t *out = malloc((n ? n : 1) * sizeof *out);
+    for (size_t i = 0; i < n; i++) out[i] = lean_unbox_uint64(lean_array_get_core(arr, i));
+    lean_dec(arr);
+    *len = n;
+    return out;
+}
+
+uint64_t *marien_bridge_partition_batches(uint64_t n, uint64_t count, size_t *len) {
+    ensure_thread();
+    return take_u64s(marien_partition_batches(n, count), len);
+}
+
+uint64_t *marien_bridge_partition_buckets(uint64_t k, marien_values *keys, size_t *len) {
+    ensure_thread();
+    lean_object *arr = keys->arr;
+    free(keys);
+    return take_u64s(marien_partition_buckets(k, arr), len);
 }
 
 size_t marien_bridge_column_count(marien_session *s) {

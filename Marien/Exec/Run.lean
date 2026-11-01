@@ -2,6 +2,7 @@ import Marien.Encoding.Codec
 import Marien.Store.Module
 import Marien.Store.Cache
 import Marien.Exec.Validate
+import Marien.Exec.Partition
 
 /-!
 # Executor
@@ -25,6 +26,11 @@ failure fails the run and nothing older is ever used. Runs never write.
 `elpi_run` builds its goal from the predicate's signature: `i:` arguments from the parameters
 through the typed codec, `o:` arguments as output columns `outN` whose types are fixed when the
 call is bound. `elpi_validate` runs `violation S C X` and turns solutions into report rows.
+
+Each entry point loads the tables its verdict says it reaches. A narrowed scope (only for
+monotone entry points) and an anchor or key partition restrict which rows the shim scans; a
+partitioned run solves one batch at a time, each in a fresh store, and keeps a row only when its
+subject is one of the batch's anchors.
 
 Facts are added to a copy of the cached program, so every call solves in a fresh store and
 nothing of it outlives the call. Exhausting `elpi_fuel` or `elpi_max_facts` is an error, never a
@@ -60,6 +66,9 @@ structure RelScan where
 inductive Scan where
   | node (s : NodeScan)
   | rel (s : RelScan)
+  /-- The structural facts `in_cycle.<rel>` (`cycle = true`) or `component.<rel>` of a rel table
+  over one node table, computed from its edges. -/
+  | structural (rel : RelPlan) (node : NodePlan) (cycle : Bool)
   deriving Inhabited
 
 namespace Scan
@@ -67,13 +76,16 @@ namespace Scan
 def table : Scan → String
   | .node s => s.plan.name
   | .rel s => s.plan.name
+  | .structural r _ _ => r.name
 
-/-- For the shim: `["node", table, column…]`, or `["rel", table, n, from₁, to₁, …, column…]`
-with the `n` encoded FROM/TO pairs (pairs to a table left out of the signature are not scanned). -/
+/-- For the shim: `["node", table, column…]`, `["rel", table, n, from₁, to₁, …, column…]` with
+the `n` encoded FROM/TO pairs (pairs to a table left out of the signature are not scanned), or
+`["cycle" | "component", rel table, node table]`. -/
 def describe : Scan → Array String
   | .node s => #["node", s.plan.name] ++ (s.props.map (·.name)).toArray
   | .rel s => #["rel", s.plan.name, toString s.plan.pairs.length] ++
       (s.plan.pairs.flatMap fun (a, b) => [a, b]).toArray ++ (s.props.map (·.name)).toArray
+  | .structural r n c => #[if c then "cycle" else "component", r.name, n.name]
 
 end Scan
 
@@ -89,7 +101,12 @@ def scansFor (sig : Signature) (mentioned : List String) : Array Scan :=
     let props := r.props.filter (mentioned.contains ·.pred)
     let listEdges := mentioned.contains r.id
     if listEdges || !props.isEmpty then some (Scan.rel { plan := r, listEdges, props }) else none
-  (nodes ++ rels).toArray
+  let structural := sig.plan.rels.flatMap fun r =>
+    match r.selfKind?.bind fun k => sig.plan.nodes.find? (·.name == k) with
+    | some n => [true, false].filterMap fun c =>
+        if mentioned.contains (Origin.structural r.name c).ident then some (Scan.structural r n c) else none
+    | none => []
+  (nodes ++ rels ++ structural).toArray
 
 /-! ### Preparing a call -/
 
@@ -99,6 +116,8 @@ structure Compiled where
   sig : Signature
   /-- Generated predicates the module mentions, from its derived metadata. -/
   mentioned : List String
+  /-- The derived metadata it was compiled with, verdicts included. -/
+  derived : Derived := { declares := [], defines := [], callsGenerated := [], accumulates := [], entries := [] }
   deriving Inhabited
 
 abbrev HandleCache := Cache Compiled
@@ -132,6 +151,12 @@ structure Session where
   pred : String := ""
   args : Array GoalArg := #[]
   output : Output := .text
+  /-- The accepted partition the call runs in, if any. -/
+  partition : Option Analysis.PartitionPlan := none
+  /-- The solution variable holding the subject, for an anchor partition's row filter. -/
+  subjectVar : String := ""
+  /-- The anchors of the current batch: their table and keys. -/
+  anchors : Option (String × Std.HashSet String) := none
   deriving Inhabited
 
 /-- The modules `name` accumulates, transitively, with the hash of their source. -/
@@ -166,15 +191,20 @@ def compiledFor (cache : HandleCache) (schema : Schema) (stored : List Stored) (
       schemaHash := runHash derived schema, deps := depHashes stored name }
   let (hit, cache) := cache.find? key
   match hit with
-  | some c => return (m, derived, c, cache)
+  | some c => return (m, c.derived, c, cache)
   | none =>
+    -- after a schema change the analysis runs again, so the verdicts match what is compiled
+    let derived ← if m.schemaHash.isEmpty || m.schemaHash == key.schemaHash then pure derived
+      else match check schema stored name m.source with
+        | .ok c => pure c.derived
+        | .error e => throw s!"module {name} (the schema changed since the module was saved): {e}"
     let sig ← (Signature.ofSchema (Engine.reservedNames.contains ·) schema).mapError (s!"signature: {·}")
     let libs := (stored.filter (·.name != name)).map fun s => (s.name, s.source)
     let program ← (Engine.compile [(signatureUnit, sig.text), (name, m.source)] libs).mapError fun e =>
       let changed := if m.schemaHash.isEmpty || m.schemaHash == key.schemaHash then ""
         else " (the schema changed since the module was saved)"
       s!"module {name}{changed}: {errorText e}"
-    let c : Compiled := { program, sig, mentioned := derived.callsGenerated }
+    let c : Compiled := { program, sig, mentioned := derived.callsGenerated, derived }
     return (m, derived, c, cache.insert key c)
 
 /-- Find or compile the module and start a session. Besides the tables the module mentions, the
@@ -230,6 +260,25 @@ def bindArgs (sig : Signature) (pred : String) (psig : Elpi.Host.PredSig)
       cols := cols.push (n, col)
   return (args, cols)
 
+/-- The generated predicates a call of `preds` loads: what their verdicts say they reach, or
+everything the module mentions for a module saved before the analyzer. -/
+def reachedBy (c : Compiled) (preds : List String) : List String :=
+  if c.derived.verdicts.isEmpty then c.mentioned
+  else preds.flatMap fun p => ((c.derived.verdict? p).map (·.reached)).getD []
+
+/-- The verdict of an entry point that is asked to run on a narrowed scope; only a monotone one
+may. -/
+-- @tg: implements:: [[openspec:rule-execution#Narrowed scope for monotone entry points]] {confidence: partial, note: "the bind-time check; the shim applies the scope"}
+def checkScope (c : Compiled) (fn pred : String) : Except String Unit := do
+  let some v := c.derived.verdict? pred
+    | throw s!"{fn}: {pred} has no stored analysis; save the module again to run it on a scope"
+  unless v.monotone do
+    throw s!"{fn}: {pred} cannot run on a narrowed scope because it is not monotone: {v.whyNotMonotone}"
+
+/-- The partition a call of `pred` runs in: its accepted partition, unless it runs on a scope. -/
+def partitionOf (c : Compiled) (pred : String) (narrowed : Bool) : Option Analysis.PartitionPlan :=
+  if narrowed then none else (c.derived.verdict? pred).bind (·.partition)
+
 /-- The entry points of a module and of the modules it accumulates. -/
 def entriesOf (stored : List Stored) (name : String) (d : Derived) : List String :=
   d.entries ++ (depHashes stored name).flatMap fun (n, _) =>
@@ -239,27 +288,48 @@ def entriesOf (stored : List Stored) (name : String) (d : Derived) : List String
 columns fixed. -/
 -- @tg: implements:: [[openspec:rule-execution#Typed entry points]]
 def prepareRun (cache : HandleCache) (schema : Schema) (stored : List Stored) (name pred : String)
-    (params : List (String × Value)) (maxFacts : Nat) : Except String (Session × HandleCache) := do
+    (params : List (String × Value)) (maxFacts : Nat) (narrowed : Bool := false) :
+    Except String (Session × HandleCache) := do
   let (_, derived, compiled, cache) ← compiledFor cache schema stored name
   let some psig := Engine.predSig? compiled.program pred | throw s!"module {name} has no predicate {pred}"
   unless (entriesOf stored name derived).contains pred do
     throw s!"predicate {pred} has no mode declaration; declare it with pred {pred} i:…, o:… to call it with elpi_run"
   let (args, cols) ← bindArgs compiled.sig pred psig params
-  return ({ compiled, scans := scansFor compiled.sig compiled.mentioned, program := compiled.program,
-            maxFacts, pred, args, output := .typed cols }, cache)
+  if narrowed then checkScope compiled "elpi_run" pred
+  let partition := partitionOf compiled pred narrowed
+  let subjectVar := match (psig.args.toList.findIdx? (·.ty == .const "subject")) with
+    | some k => s!"out{k + 1}"
+    | none => ""
+  return ({ compiled, scans := scansFor compiled.sig (reachedBy compiled [pred]), program := compiled.program,
+            maxFacts, pred, args, output := .typed cols, partition, subjectVar }, cache)
 
 /-- `elpi_validate`, one module: a session for `violation S C X`. -/
 -- @tg: implements:: [[openspec:validation#Uniform validation report]]
 def prepareValidate (cache : HandleCache) (schema : Schema) (stored : List Stored) (name : String)
-    (maxFacts : Nat) (minSeverity : Severity) : Except String (Session × HandleCache) := do
+    (maxFacts : Nat) (minSeverity : Severity) (narrowed : Bool := false) :
+    Except String (Session × HandleCache) := do
   let (m, derived, compiled, cache) ← compiledFor cache schema stored name
   unless derived.validates do throw s!"module {name} does not declare violation"
+  if narrowed then checkScope compiled s!"elpi_validate: module {name}" "violation"
+  let hasMessage := (Engine.predSig? compiled.program "violation_message").isSome
   let ctx : ReportCtx :=
-    { module := name, version := m.version, subjects := subjectCases compiled.sig
-      hasMessage := (Engine.predSig? compiled.program "violation_message").isSome, minSeverity }
-  return ({ compiled, scans := scansFor compiled.sig compiled.mentioned, program := compiled.program,
+    { module := name, version := m.version, subjects := subjectCases compiled.sig, hasMessage, minSeverity }
+  let preds := if hasMessage then ["violation", "violation_message"] else ["violation"]
+  return ({ compiled, scans := scansFor compiled.sig (reachedBy compiled preds), program := compiled.program,
             maxFacts, pred := "violation", args := #[.out "S", .out "C", .out "X"],
-            output := .report ctx }, cache)
+            output := .report ctx, partition := partitionOf compiled "violation" narrowed, subjectVar := "X" }, cache)
+
+/-- The session for the next batch of an anchor partition: the facts of the previous batch are
+dropped (the store is fresh) and only rows whose subject is one of `keys` are kept. -/
+def Session.forBatch (s : Session) (keys : Array Value) : Session :=
+  let table := match s.partition with
+    | some (.anchor t _ _) => t
+    | _ => ""
+  { s with program := s.compiled.program, facts := 0,
+           anchors := some (table, keys.foldl (fun acc k => acc.insert (keyText k)) {}) }
+
+/-- The session for the next bucket of a key partition: a fresh store. -/
+def Session.fresh (s : Session) : Session := { s with program := s.compiled.program, facts := 0 }
 
 /-! ### Facts from column batches -/
 
@@ -299,7 +369,8 @@ private def addAll (s : Session) (table : String) (batches : List (String × Arr
   return { s with program := p, facts := s.facts + n }
 
 /-- Add one column batch of scan `i`. A node batch is `[keys, props…]`; a rel batch is
-`[src tables, src keys, internal ids, dst tables, dst keys, props…]`, props in the scan's order.
+`[src tables, src keys, internal ids, dst tables, dst keys, props…]`, props in the scan's order;
+a cycle batch is `[keys]` of the nodes on a cycle, a component batch `[keys, component ids]`.
 A NULL property gives no fact. -/
 def addBatch (s : Session) (i : Nat) (cols : Array (Array Value)) : Except String Session := do
   let sig := s.compiled.sig
@@ -346,6 +417,14 @@ def addBatch (s : Session) (i : Nat) (cols : Array (Array Value)) : Except Strin
         | v => rows := rows.push #[edges[k]!, ← (Codec.encodeChecked p.ty v).mapError (s!"table {r.name}, property {p.name}: {·}")]
       batches := batches ++ [(p.pred, rows)]
     addAll s r.name batches
+  | .structural r n cycle =>
+    let keys ← colOf cols 0 r.name "key"
+    let nodes ← keys.mapM (nodeTerm sig n.name)
+    let pred := (Origin.structural r.name cycle).ident
+    if cycle then addAll s r.name [(pred, nodes.map (#[·]))]
+    else
+      let ids ← colOf cols 1 r.name "component"
+      addAll s r.name [(pred, (nodes.zip ids).map fun (t, c) => #[t, .int (idOf c)])]
 
 /-! ### Solving in slices -/
 
@@ -359,6 +438,9 @@ structure Run where
   /-- The program with the call's facts, for `violation_message`. -/
   program : Program
   output : Output := .text
+  /-- An anchor partition's row filter: subject cases, the subject's variable, the anchor table
+  and the batch's keys. -/
+  filter : Option (List SubjectCase × String × String × Std.HashSet String) := none
 
 /-- A cell for the shim, in prefix form: `n` (NULL), `i<int>`, `f<float bits>`, `s<string>`,
 `b0`/`b1`, `l<count>` then the items, `t<count>` then the fields. -/
@@ -411,7 +493,20 @@ def startGoal (s : Session) (fuel sliceSteps maxSolutions : Nat) : Except String
   let output := match s.output with
     | .report ctx => .report { ctx with fuel }
     | o => o
-  return { query := q, fuel, sliceSteps := max sliceSteps 1, maxSolutions, program := s.program, output }
+  let filter := s.anchors.map fun (t, keys) => (subjectCases s.compiled.sig, s.subjectVar, t, keys)
+  return { query := q, fuel, sliceSteps := max sliceSteps 1, maxSolutions, program := s.program, output, filter }
+
+/-- Whether an anchor partition's batch keeps a solution: its subject is one of the batch's
+anchors. -/
+def keeps (r : Run) (bs : Array (String × ResultTerm)) : Bool :=
+  match r.filter with
+  | none => true
+  | some (cases, var, table, keys) =>
+    match bs.find? (·.1 == var) with
+    | some (_, t) => match decodeSubject cases t with
+      | some (label, key) => label == table && keys.contains (keyText key)
+      | none => false
+    | none => false
 
 /-- Run one slice. -/
 -- @tg: implements:: [[openspec:rule-execution#Fuel-sliced execution]]
@@ -422,6 +517,7 @@ def step (r : Run) : Step :=
     let fuel := r.fuel
     match Engine.slice r.query r.sliceSteps with
     | .solution bs _ q' =>
+      if !keeps r bs then .paused { r with query := q' } else
       let next := { r with query := q', solutions := r.solutions + 1 }
       match r.output with
       | .text => .solution (bs.foldl (fun acc (v, t) => acc.push v |>.push (Engine.toJson t).compress) #[]) next

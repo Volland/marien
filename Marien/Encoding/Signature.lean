@@ -31,6 +31,14 @@ With several FROM/TO pairs the endpoints are union kinds `r.src` and `r.dst`, wi
 constructor per node table (`type owns.src.person person -> owns.src.`). Edge ids are internal
 ids, stable only within one transaction.
 
+A rel table with one FROM/TO pair over one node table also gets its structural predicates,
+computed from the graph when a rule reaches them:
+
+```
+pred in_cycle.reports_to o:person.
+pred component.reports_to o:person, o:int.
+```
+
 Names are lower snake case (`ReportsTo` ↦ `reports_to`). Generation fails when two catalog
 names map to one identifier, or an identifier is a keyword or library name, so the naming is
 injective whenever generation succeeds (`assignNames_injective`). `_elpi_*` tables never reach
@@ -114,6 +122,9 @@ inductive Origin where
   | subject (table : String)
   /-- A kind or constant of the validation protocol (`severity`, `error`, `subject`, …). -/
   | protocol (name : String)
+  /-- The structural predicate `in_cycle.<rel>` (`cycle = true`) or `component.<rel>` of a rel
+  table whose endpoints are one node table. -/
+  | structural (rel : String) (cycle : Bool)
   deriving DecidableEq, Repr, Inhabited
 
 namespace Origin
@@ -129,6 +140,7 @@ def ident : Origin → String
   | .endpointCtor r s t => snake r ++ "." ++ side s ++ "." ++ snake t
   | .subject t => "subj_" ++ snake t
   | .protocol n => n
+  | .structural r c => (if c then "in_cycle." else "component.") ++ snake r
 
 /-- The catalog names the identifier is made of. -/
 def parts : Origin → List String
@@ -139,10 +151,12 @@ def parts : Origin → List String
   | .endpointCtor r _ t => [r, t]
   | .subject t => [t]
   | .protocol _ => []
+  | .structural r _ => [r]
 
 /-- The table an identifier belongs to; `none` for the protocol's own names. -/
 def table? : Origin → Option String
-  | .node t | .rel t | .prop t _ | .record t _ | .endpoint t _ | .endpointCtor t _ _ | .subject t => some t
+  | .node t | .rel t | .prop t _ | .record t _ | .endpoint t _ | .endpointCtor t _ _ | .subject t
+  | .structural t _ => some t
   | .protocol _ => none
 
 def describe : Origin → String
@@ -154,6 +168,7 @@ def describe : Origin → String
   | .endpointCtor r s t => s!"{side s} endpoint {t} of {r}"
   | .subject t => s!"the subject constructor of {t}"
   | .protocol n => s!"the validation protocol's {n}"
+  | .structural r c => s!"the {if c then "cycle" else "component"} predicate of {r}"
 
 /-- Every part becomes a word that starts with an ASCII lower-case letter, as ELPI constants
 must (a leading `_` or upper-case letter would make a variable). -/
@@ -208,6 +223,13 @@ def multi (r : RelPlan) : Bool := r.pairs.length > 1
 
 def srcTables (r : RelPlan) : List String := (r.pairs.map (·.1)).eraseDups
 def dstTables (r : RelPlan) : List String := (r.pairs.map (·.2)).eraseDups
+
+/-- The node table of both endpoints, when the rel table has one FROM/TO pair over one table;
+such a table gets the structural predicates `in_cycle.<rel>` and `component.<rel>`. -/
+def selfKind? (r : RelPlan) : Option String :=
+  match r.pairs with
+  | [(a, b)] => if a == b then some a else none
+  | _ => none
 
 end RelPlan
 
@@ -327,6 +349,7 @@ def origins (p : Plan) : List Origin :=
   p.rels.flatMap fun r =>
     .rel r.name :: .subject r.name :: r.props.map (fun pr => .prop r.name pr.name) ++
       r.records.map (·.origin) ++
+    (if r.selfKind?.isSome then [.structural r.name true, .structural r.name false] else []) ++
     (if r.multi then
       [.endpoint r.name true, .endpoint r.name false] ++
       r.srcTables.map (.endpointCtor r.name true) ++ r.dstTables.map (.endpointCtor r.name false)
@@ -398,11 +421,17 @@ private def recordDecls (rs : List RecordDecl) : List String :=
     [s!"kind {r.ctor} type.",
      s!"type {r.ctor} {String.join (r.fields.map (·.render ++ " -> "))}{r.ctor}."]
 
+/-- A generated predicate indexed by its node and edge arguments to `depths` (`_`: not
+indexed). A node is `person 7`, so the default first-argument index, which looks only at the
+constructor, would put every fact of a table in one bucket; depth 2 hashes the key too. -/
+def indexedPred (depths : List String) (decl : String) : String :=
+  s!":index ({" ".intercalate depths})\n{decl}"
+
 def nodeDecls (n : NodePlan) : String :=
   "\n".intercalate <|
     [s!"kind {n.id} type."] ++ recordDecls n.records ++
-    [s!"pred {n.id} o:{n.id}.", s!"type {n.id} {n.keyTy.render} -> {n.id}."] ++
-    n.props.map (fun p => s!"pred {p.pred} o:{n.id}, o:{p.ty.render}.") ++
+    [indexedPred ["2"] s!"pred {n.id} o:{n.id}.", s!"type {n.id} {n.keyTy.render} -> {n.id}."] ++
+    n.props.map (fun p => indexedPred ["2"] s!"pred {p.pred} o:{n.id}, o:{p.ty.render}.") ++
     [s!"type {(Origin.subject n.name).ident} {n.id} -> subject."]
 
 def relDecls (nodeId : String → String) (r : RelPlan) : String :=
@@ -418,11 +447,19 @@ def relDecls (nodeId : String → String) (r : RelPlan) : String :=
       | (a, b) :: _ => ([], nodeId a, nodeId b)
       | [] => ([], "", "")
   let (endDecls, src, dst) := ends
+  -- a union endpoint wraps the node once more (`owns.src.person (person 7)`)
+  let endDepth := if r.multi then "3" else "2"
   "\n".intercalate <|
     [s!"kind {r.id} type."] ++ endDecls ++ recordDecls r.records ++
-    [s!"pred {r.id} o:{src}, o:{r.id}, o:{dst}.", s!"type {r.id} int -> {r.id}."] ++
-    r.props.map (fun p => s!"pred {p.pred} o:{r.id}, o:{p.ty.render}.") ++
-    [s!"type {(Origin.subject r.name).ident} {r.id} -> subject."]
+    [indexedPred [endDepth, "2", endDepth] s!"pred {r.id} o:{src}, o:{r.id}, o:{dst}.",
+     s!"type {r.id} int -> {r.id}."] ++
+    r.props.map (fun p => indexedPred ["2"] s!"pred {p.pred} o:{r.id}, o:{p.ty.render}.") ++
+    [s!"type {(Origin.subject r.name).ident} {r.id} -> subject."] ++
+    (match r.selfKind? with
+     | some k =>
+       [indexedPred ["2"] s!"pred {(Origin.structural r.name true).ident} o:{nodeId k}.",
+        indexedPred ["2"] s!"pred {(Origin.structural r.name false).ident} o:{nodeId k}, o:int."]
+     | none => [])
 
 /-- The validation protocol's declarations, at the head of every signature. -/
 -- @tg: implements:: [[openspec:validation#Violation protocol]] {confidence: partial, note: "the prepended severity and subject kinds"}
@@ -452,7 +489,10 @@ def table? (s : Signature) (name : String) : Option String := (s.tables.find? (�
 /-- Generated predicates and the table each belongs to. -/
 def preds (s : Signature) : List (String × String) :=
   s.plan.nodes.flatMap (fun n => (n.id, n.name) :: n.props.map (·.pred, n.name)) ++
-  s.plan.rels.flatMap fun r => (r.id, r.name) :: r.props.map (·.pred, r.name)
+  s.plan.rels.flatMap fun r => (r.id, r.name) :: r.props.map (·.pred, r.name) ++
+    (if r.selfKind?.isSome then
+      [((Origin.structural r.name true).ident, r.name), ((Origin.structural r.name false).ident, r.name)]
+    else [])
 
 /-- The signature of a schema; `reserved` names the identifiers it must not produce. -/
 -- @tg: implements:: [[openspec:schema-encoding#Node table encoding]]

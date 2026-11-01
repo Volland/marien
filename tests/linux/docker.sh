@@ -12,4 +12,4 @@ mkdir -p .deps/cli-linux
   [ -f liblbug.tar.gz ] || gh release download "v$VER" -R LadybugDB/ladybug -p "liblbug-linux-$ARCH.tar.gz" -O liblbug.tar.gz
   [ -f lbug_cli.tar.gz ] || gh release download "v$VER" -R LadybugDB/ladybug -p "lbug_cli-linux-$ARCH.tar.gz" -O lbug_cli.tar.gz )
 mkdir -p build/linux
-docker run --rm -e MARIEN_NEW_PLATFORM -v "$PWD:/src:ro" -v "$PWD/build/linux:/out" ubuntu:24.04 bash /src/tests/linux/run.sh
+docker run --rm -e MARIEN_NEW_PLATFORM -e PROPERTY_CASES -v "$PWD:/src:ro" -v "$PWD/build/linux:/out" ubuntu:24.04 bash /src/tests/linux/run.sh

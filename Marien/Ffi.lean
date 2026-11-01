@@ -124,12 +124,13 @@ def queryPrepare (catalog modules name goal : String) (maxFacts cacheSize : UInt
     IO (Except String Session) :=
   withCache catalog modules cacheSize fun c sc st => prepare c sc st name maxFacts.toNat goal
 
-/-- `elpi_run`: open a session for `pred` with the named parameters. -/
+/-- `elpi_run`: open a session for `pred` with the named parameters; `narrowed` when the call
+passes a scope. -/
 @[export marien_run_prepare]
 def runPrepare (catalog modules name pred : String) (names : Array String) (values : Array Value)
-    (maxFacts cacheSize : UInt64) : IO (Except String Session) :=
+    (maxFacts cacheSize : UInt64) (narrowed : UInt8) : IO (Except String Session) :=
   withCache catalog modules cacheSize fun c sc st =>
-    prepareRun c sc st name pred (names.toList.zip values.toList) maxFacts.toNat
+    prepareRun c sc st name pred (names.toList.zip values.toList) maxFacts.toNat (narrowed != 0)
 
 /-- The output columns of a typed session: `[name, type token…]` each (`Codec.Col.ltyTokens`). -/
 @[export marien_session_columns]
@@ -145,11 +146,37 @@ def validateOrderC (modules : String) (names : Array String) (all : UInt8) : Exc
 
 /-- `elpi_validate`: a session for one module's `violation S C X`. -/
 @[export marien_validate_prepare]
-def validatePrepare (catalog modules name minSeverity : String) (maxFacts cacheSize : UInt64) :
-    IO (Except String Session) := do
+def validatePrepare (catalog modules name minSeverity : String) (maxFacts cacheSize : UInt64)
+    (narrowed : UInt8) : IO (Except String Session) := do
   let some sev := Severity.ofName? minSeverity
     | return .error s!"min_severity must be error, warning or info, not {minSeverity.quote}"
-  withCache catalog modules cacheSize fun c sc st => prepareValidate c sc st name maxFacts.toNat sev
+  withCache catalog modules cacheSize fun c sc st =>
+    prepareValidate c sc st name maxFacts.toNat sev (narrowed != 0)
+
+/-! ### Partitions -/
+
+/-- The partition a session runs in (`PartitionPlan.describe`), or nothing for full scope. -/
+@[export marien_session_partition]
+def sessionPartition (s : Session) : Array String := (s.partition.map (·.describe)).getD #[]
+
+/-- The session for the next anchor batch, keeping rows whose subject is one of `keys`. -/
+@[export marien_session_batch]
+def sessionBatch (s : Session) (keys : Array Value) : Session := s.forBatch keys
+
+/-- The session for the next key bucket. -/
+@[export marien_session_fresh]
+def sessionFresh (s : Session) : Session := s.fresh
+
+/-- The size of each batch when `count` anchors are split into batches of at most `n`. -/
+@[export marien_partition_batches]
+def partitionBatches (n count : UInt64) : Array UInt64 :=
+  (Partition.batchSizes n.toNat count.toNat).toArray.map (·.toUInt64)
+
+/-- The bucket of each key value among `k`; `k` for a NULL key, which is in no bucket. -/
+@[export marien_partition_buckets]
+def partitionBuckets (k : UInt64) (keys : Array Value) : Array UInt64 :=
+  (Partition.bucketsOf k.toNat (keys.toList.map fun | .null => none | v => some (keyText v))).toArray.map
+    fun | some b => b.toUInt64 | none => k
 
 /-- The scans of a session: `["node" | "rel", table, column…]` each. -/
 @[export marien_session_scans]

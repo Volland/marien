@@ -43,6 +43,8 @@ Implemented: typed entry points, validation and schema evolution with six proofs
 
 M3: rule analysis (reachability, monotonicity, dynamic, locality), narrowed scope, anchor and key partitions, structural facts and the differential property tests.
 
+Implemented: the analyzer with stored verdicts, narrowed scopes, anchor and key partitions, structural facts, three planner theorems and `reach_closed`, and the differential properties (unit, integration and property tests). Open: the stretch soundness theorems, indexing deep enough for full-scope joins ([[constraints#Deep indexing scans the first-argument bucket]]), and scopes as query parameters, which LadybugDB refuses ([[constraints#Table function arguments are literals]]).
+
 - status:: proposed
 
 ## add-higher-order-layer

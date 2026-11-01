@@ -1008,6 +1008,227 @@ typedef struct {
     int (*fn)(void);
 } Test;
 
+/* --- M3: partitions, structural facts and narrowed scopes ----------------------------- */
+
+/* Local rules: radius 1 around the subject, outgoing and incoming. */
+static const char *local_rules =
+    "pred violation o:severity, o:string, o:subject.\n"
+    "violation error \"no-manager\" (subj_person P) :- person.name P _, not (reports_to P _ _).\n"
+    "violation warning \"manager-unnamed\" (subj_person P) :- reports_to P _ M, not (person.name M _).\n"
+    "violation info \"unnamed-report\" (subj_person M) :- reports_to R _ M, not (person.name R _).\n";
+
+/* Persons 1..n, named p<i> except every 7th, with email e<i mod m>; person i reports to i/2 (i >= 2).
+ * Modules full (local_rules) and part (the same, partitioned by person radius 1). */
+static int tree(Db *d, const char *name, int n, int m) {
+    if (!open_db(d, name)) return 0;
+    char load[1200];
+    snprintf(load, sizeof load, "LOAD EXTENSION '%s'", ext_path);
+    if (!ok(d, "%s", load)) return 0;
+    if (!ok(d, "CREATE NODE TABLE Person(id INT64 PRIMARY KEY, name STRING, email STRING)")) return 0;
+    if (!ok(d, "CREATE REL TABLE ReportsTo(FROM Person TO Person)")) return 0;
+    if (!ok(d, "UNWIND range(1, %d) AS i CREATE (:Person {id: i, email: 'e' + CAST(i %% %d AS STRING), "
+               "name: CASE WHEN i %% 7 = 0 THEN NULL ELSE 'p' + CAST(i AS STRING) END})", n, m)) return 0;
+    if (!ok(d, "UNWIND range(2, %d) AS i MATCH (a:Person {id: i}), (b:Person {id: i / 2}) CREATE (a)-[:ReportsTo]->(b)", n))
+        return 0;
+    if (!ok(d, "CALL elpi_init()")) return 0;
+    if (!ok(d, "CALL elpi_save('full', '%s')", local_rules)) return 0;
+    return ok(d, "CALL elpi_save('part', '%s%% @marien partition violation by person radius 1\n')", local_rules) != NULL;
+}
+
+#define REPORT_Q "CALL elpi_validate(['%s']) RETURN severity, code, subject_pk ORDER BY severity, code, subject_pk"
+
+/* @tg: verifies:: [[openspec:partitioning#Anchor partitions#Partitioned result equals full scope]] {level: integration} */
+static int partitioned_equals_full(void) {
+    Db d;
+    /* the scenario's 50000 persons in batches of 10000, scaled down tenfold: a full-scope join
+     * over loaded facts is quadratic in LeanElpi (constraint "Deep indexing scans the bucket") */
+    CHECK(tree(&d, __func__, 5000, 100), "setup failed: %s", last_error);
+    char *full = strdup(OK(&d, REPORT_Q, "full"));
+    int rows = count_lines(full);
+    OK(&d, "CALL elpi_partition_batch=1000");
+    const char *part = OK(&d, REPORT_Q, "part");
+    int same = strcmp(full, part) == 0;
+    CHECK(same, "five batches of 1000 agree with full scope (%d rows vs %d)", count_lines(part), rows);
+    OK(&d, "CALL elpi_partition_batch=7");
+    part = OK(&d, REPORT_Q, "part");
+    same = strcmp(full, part) == 0;
+    CHECK(same, "batches of 7 agree with full scope (%d rows vs %d)", count_lines(part), rows);
+    free(full);
+    CHECK(rows > 1000, "rows of all three kinds: %d", rows);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:partitioning#Anchor partitions#Each batch gets a fresh store]] {level: integration} */
+static int fresh_store_per_batch(void) {
+    Db d;
+    CHECK(tree(&d, __func__, 100, 30), "setup failed: %s", last_error);
+    char *full = strdup(OK(&d, REPORT_Q, "full"));
+    /* one anchor's neighbourhood fits in 40 facts, the whole graph does not: the facts of one
+     * batch are gone when the next one loads */
+    OK(&d, "CALL elpi_max_facts=40");
+    OK(&d, "CALL elpi_partition_batch=1");
+    const char *e = fails(&d, REPORT_Q, "full");
+    CHECK(e && strstr(e, "elpi_max_facts"), "full scope exceeds the budget: %s", e ? e : "(succeeded)");
+    const char *part = OK(&d, REPORT_Q, "part");
+    int same = strcmp(full, part) == 0;
+    CHECK(same, "each batch within budget, same rows: %s", part);
+    /* batches of 50 overflow and are split until they fit */
+    OK(&d, "CALL elpi_partition_batch=50");
+    part = OK(&d, REPORT_Q, "part");
+    same = strcmp(full, part) == 0;
+    CHECK(same, "split batches give the same rows");
+    free(full);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:partitioning#Anchor partitions#A failing batch fails the call]] {level: integration} */
+static int failing_batch(void) {
+    Db d;
+    CHECK(open_db(&d, __func__), "open: %s", last_error);
+    OK(&d, "LOAD EXTENSION '%s'", ext_path);
+    OK(&d, "CREATE NODE TABLE Person(id INT64 PRIMARY KEY, name STRING, email STRING)");
+    OK(&d, "CREATE REL TABLE ReportsTo(FROM Person TO Person)");
+    /* anchors in offset order: batches of two are [1 2] [3 4] [5 6] ...; 300 people report to 5 */
+    OK(&d, "UNWIND range(1, 6) AS i CREATE (:Person {id: i, name: 'p'})");
+    OK(&d, "UNWIND range(100, 399) AS i CREATE (:Person {id: i, name: 'q'})");
+    OK(&d, "UNWIND range(100, 399) AS i MATCH (a:Person {id: i}), (b:Person {id: 5}) CREATE (a)-[:ReportsTo]->(b)");
+    OK(&d, "CALL elpi_init()");
+    OK(&d, "CALL elpi_save('part', '%s%% @marien partition violation by person radius 1\n')", local_rules);
+    OK(&d, "CALL elpi_partition_batch=2");
+    const char *r = OK(&d, "CALL elpi_validate(['part']) RETURN count(*)");
+    CHECK(strcmp(r, "6\n") == 0, "with enough fuel every batch runs: persons 1 to 6 have no manager: %s", r);
+    /* the third batch needs far more steps than the first two */
+    OK(&d, "CALL elpi_fuel=1000");
+    const char *e = fails(&d, "CALL elpi_validate(['part']) RETURN *");
+    CHECK(e && strstr(e, "module part: batch 3 of") && strstr(e, "elpi_fuel"), "the call fails, with no rows: %s",
+          e ? e : "(succeeded)");
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:partitioning#Key partitions#Duplicate emails are found across buckets]] {level: integration} */
+static int duplicate_emails(void) {
+    Db d;
+    CHECK(tree(&d, __func__, 900, 300), "setup failed: %s", last_error);
+    const char *rules = "pred violation o:severity, o:string, o:subject.\n"
+                        "violation error \"dup-email\" (subj_person P) :- person.email P E, person.email Q E, not (P = Q).\n";
+    OK(&d, "CALL elpi_save('fullk', '%s')", rules);
+    OK(&d, "CALL elpi_save('partk', '%s%% @marien partition violation by person.email\n')", rules);
+    OK(&d, "CREATE (:Person {id: 5000, name: 'no-email'})");
+    char *full = strdup(OK(&d, REPORT_Q, "fullk"));
+    CHECK(count_lines(full) == 1800, "two duplicates per person: %d rows", count_lines(full));
+    OK(&d, "CALL elpi_partition_batch=100");
+    const char *part = OK(&d, REPORT_Q, "partk");
+    int same = strcmp(full, part) == 0;
+    CHECK(same, "nine buckets agree with full scope (%d rows)", count_lines(part));
+    free(full);
+    close_db(&d);
+    return 1;
+}
+
+/* Persons 1..5: 1 -> 2 -> 3 -> 1 is a cycle, 4 -> 1 is not on it, 5 has no edges; module s. */
+static int cyclic(Db *d, const char *name) {
+    if (!open_db(d, name)) return 0;
+    char load[1200];
+    snprintf(load, sizeof load, "LOAD EXTENSION '%s'", ext_path);
+    const char *setup[] = {
+        load,
+        "CREATE NODE TABLE Person(id INT64 PRIMARY KEY, name STRING)",
+        "CREATE REL TABLE ReportsTo(FROM Person TO Person)",
+        "UNWIND range(1, 5) AS i CREATE (:Person {id: i, name: 'p'})",
+        "UNWIND [[1, 2], [2, 3], [3, 1], [4, 1]] AS e MATCH (a:Person {id: e[1]}), (b:Person {id: e[2]}) "
+        "CREATE (a)-[:ReportsTo]->(b)",
+        "CALL elpi_init()",
+        "CALL elpi_save('s', 'pred cyc o:person.\ncyc P :- in_cycle.reports_to P.\n"
+        "pred comp o:person, o:int.\ncomp P C :- component.reports_to P C.\n')",
+    };
+    for (size_t i = 0; i < sizeof setup / sizeof *setup; i++)
+        if (!ok(d, "%s", setup[i])) return 0;
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:partitioning#Structural facts#Cycles come from SCC]] {level: integration} */
+static int cycles_from_scc(void) {
+    Db d;
+    CHECK(cyclic(&d, __func__), "setup failed: %s", last_error);
+    const char *r = OK(&d, "CALL elpi_run('s', 'cyc') RETURN out1 ORDER BY out1");
+    CHECK(strcmp(r, "1\n2\n3\n") == 0, "persons 1, 2 and 3: %s", r);
+    r = OK(&d, "CALL elpi_run('s', 'comp') RETURN count(DISTINCT out2), collect(out1)");
+    CHECK(strncmp(r, "2|", 2) == 0, "two weak components: %s", r);
+    r = OK(&d, "CALL elpi_run('s', 'comp') WITH out1, out2 WHERE out1 IN [1, 4] RETURN count(DISTINCT out2)");
+    CHECK(strcmp(r, "1\n") == 0, "1 and 4 share a component: %s", r);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:partitioning#Structural facts#Structural facts are never stale]] {level: integration} */
+static int structural_never_stale(void) {
+    Db d;
+    CHECK(cyclic(&d, __func__), "setup failed: %s", last_error);
+    OK(&d, "BEGIN TRANSACTION");
+    OK(&d, "MATCH (:Person {id: 3})-[r:ReportsTo]->(:Person {id: 1}) DELETE r");
+    const char *r = OK(&d, "CALL elpi_run('s', 'cyc') RETURN count(*)");
+    CHECK(strcmp(r, "0\n") == 0, "no cycle after the delete in this transaction: %s", r);
+    OK(&d, "ROLLBACK");
+    r = OK(&d, "CALL elpi_run('s', 'cyc') RETURN count(*)");
+    CHECK(strcmp(r, "3\n") == 0, "the cycle is back after the rollback: %s", r);
+    close_db(&d);
+    return 1;
+}
+
+static const char *colleague_src =
+    "pred colleague o:person, o:person.\ncolleague A B :- reports_to A _ M, reports_to B _ M, not (A = B).\n";
+
+/* @tg: verifies:: [[openspec:rule-execution#Narrowed scope for monotone entry points#Monotone entry point accepts a scope]] {level: integration} */
+static int monotone_scope(void) {
+    Db d;
+    CHECK(tree(&d, __func__, 50, 10), "setup failed: %s", last_error);
+    OK(&d, "CALL elpi_save('c', '%s')", colleague_src);
+    const char *r = OK(&d, "CALL elpi_run('c', 'colleague', NULL, {Person: [2, 4, 5, 6, 7]}) "
+                           "RETURN out1, out2, narrowed ORDER BY out1, out2");
+    CHECK(strcmp(r, "4|5|True\n5|4|True\n") == 0, "4 and 5 report to 2, which is listed: %s", r);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:rule-execution#Narrowed scope for monotone entry points#Non-monotone entry point refuses a scope]] {level: integration} */
+static int non_monotone_scope(void) {
+    COMPANY(d);
+    const char *e = fails(&d, "CALL elpi_validate(['org'], 'info', {Person: [7]}) RETURN *");
+    CHECK(e && strstr(e, "not at org:") && strstr(e, "reports_to"), "names not, its position and reports_to: %s",
+          e ? e : "(succeeded)");
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:rule-execution#Narrowed scope for monotone entry points#Narrowing never adds answers]] {level: integration} */
+static int narrowing_subset(void) {
+    Db d;
+    CHECK(tree(&d, __func__, 200, 10), "setup failed: %s", last_error);
+    OK(&d, "CALL elpi_save('c', '%s')", colleague_src);
+    char *full = strdup(OK(&d, "CALL elpi_run('c', 'colleague') RETURN out1, out2"));
+    const char *scopes[] = {"[2, 4, 5, 6, 7]", "[1, 2, 3]", "range(1, 200, 3)", "[]"};
+    for (size_t i = 0; i < sizeof scopes / sizeof *scopes; i++) {
+        const char *r = OK(&d, "CALL elpi_run('c', 'colleague', NULL, {Person: %s}) RETURN out1, out2", scopes[i]);
+        char *copy = strdup(r);
+        for (char *line = strtok(copy, "\n"); line; line = strtok(NULL, "\n")) {
+            char needle[64];
+            snprintf(needle, sizeof needle, "\n%s\n", line);
+            char *hay = malloc(strlen(full) + 2);
+            sprintf(hay, "\n%s", full);
+            int found = strstr(hay, needle) != NULL;
+            free(hay);
+            CHECK(found, "narrowed row %s is a full-scope row (scope %s)", line, scopes[i]);
+        }
+        free(copy);
+    }
+    free(full);
+    close_db(&d);
+    return 1;
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr, "usage: integration <extension> <scratch-dir> [filter]\n");
@@ -1041,7 +1262,11 @@ int main(int argc, char **argv) {
         {"failing module", failing_module}, {"unrelated DDL", unrelated_ddl}, {"reached DDL", reached_ddl},
         {"compatible change", compatible_change}, {"breaking change", breaking_change},
         {"recheck broken", recheck_broken}, {"recheck atomic", recheck_atomic},
-        {"version mismatch", version_mismatch},
+        {"version mismatch", version_mismatch}, {"partitioned equals full", partitioned_equals_full},
+        {"fresh store per batch", fresh_store_per_batch}, {"failing batch", failing_batch},
+        {"duplicate emails", duplicate_emails}, {"cycles from SCC", cycles_from_scc},
+        {"structural never stale", structural_never_stale}, {"monotone scope", monotone_scope},
+        {"non-monotone scope", non_monotone_scope}, {"narrowing subset", narrowing_subset},
     };
     int run = 0;
     for (size_t i = 0; i < sizeof tests / sizeof *tests; i++) {

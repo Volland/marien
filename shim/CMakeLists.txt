@@ -37,7 +37,7 @@ add_custom_target(lean_archives
   WORKING_DIRECTORY "${ROOT}"
   BYPRODUCTS "${MARIEN_A}" "${ELPI_A}")
 
-add_library(marien_objs OBJECT lean_bridge.c extension.cpp catalog.cpp scan.cpp)
+add_library(marien_objs OBJECT lean_bridge.c extension.cpp catalog.cpp scan.cpp structure.cpp)
 set_target_properties(marien_objs PROPERTIES
   CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON
   C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)

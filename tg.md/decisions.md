@@ -434,3 +434,81 @@ Record: `openspec/changes/add-typed-validation/design.md`.
 - status:: accepted
 - motivated_by:: [[decisions#Out-of-tree extension with its own repository]] {weight: primary}
 - motivated_by:: [[constraints#Extensions are C++ shared libraries]]
+
+## Analysis on the clause AST at save and recheck
+
+The rule analyzer runs on the clause AST of a module and the modules it accumulates whenever the module is saved or rechecked, and stores one verdict per entry point with the module.
+
+**Context.** Narrowed scopes and partitions are safe only when an analysis says so, and the answer must match the compiled code. **Consequences.** A verdict holds what the entry point reaches (runs load only those tables), whether it is monotone or `dynamic` and why, and its accepted partition. A run after a schema change analyses again in memory; `elpi_recheck` stores the new verdicts. Reachability is a closure proved closed (`reach_closed`). Positions in verdicts are those of the clause holding the construct: the AST has no positions for single goals.
+
+Record: `openspec/changes/add-analysis-and-partitioning/design.md`.
+
+- status:: accepted
+- motivated_by:: [[decisions#Closed-world scope]] {weight: primary}
+- motivated_by:: [[decisions#Staged rule generation over a reflected schema]]
+
+## The subject is the anchor
+
+An anchor partition anchors each clause on its subject variable `subj_<kind> A`: a batch keeps a row only when its subject is one of the batch's anchors, so each violation is reported by exactly one batch.
+
+**Context.** The spec asks for locality around an anchor and for the subject to be the anchor. **Consequences.** Distances are measured from the subject, so a rule about a manager whose atoms lie near the manager is accepted (sound, and wider than the spec's wording); a subject that is a constant or another table's constructor is rejected. With the row filter, overlapping neighbourhoods cannot report a violation twice (`violation_unique_batch`).
+
+- status:: accepted
+- motivated_by:: [[decisions#Partitioned validation]] {weight: primary}
+
+## Locality by inlining, conservatively
+
+Before measuring distances the analyzer inlines helper predicates into the entry clause; recursion, calls through variables, cuts, implications and library calls that reach the database reject the partition instead of being approximated.
+
+**Context.** A precise interprocedural analysis is large and would need the property tests anyway. **Consequences.** Negation sees only the variables bound before it; each edge atom records the direction from its nearer endpoint, and the scanner follows exactly those directions. The rejection measure of `tests/differential/run.sh` shows how often a rejected module would have been fine (cuts and library calls: never found wrong in 200 samples).
+
+- status:: accepted
+- motivated_by:: [[decisions#Closed-world scope]] {weight: primary}
+- motivated_by:: [[decisions#Differential testing with an oracle]]
+
+## Rejected partitions fail the save
+
+A declared partition that the checks reject makes `elpi_save` fail with the reason and the clause position, so no stored module carries a declaration it does not honour.
+
+**Consequences.** A partition on a dynamic entry point names the `=>` goal. After a schema change that makes a partition unsafe, `elpi_recheck` marks the module broken and runs fail with the reason. Monotonicity also treats `findall` like `forall`: collecting all answers is not monotone.
+
+- status:: accepted
+- motivated_by:: [[decisions#Closed-world scope]] {weight: primary}
+
+## Structural facts from Marien's own graph routines
+
+`in_cycle.<rel>` and `component.<rel>` come from Marien's own iterative Tarjan and union-find over the edges scanned in the calling transaction, not from LadybugDB's algo extension.
+
+**Context.** The algo package cannot load on macOS, and its routines are not callable from another extension without a nested query. **Consequences.** The facts are computed on every call that reaches them and never stored, so they are never stale; they are the same facts the algo extension would give.
+
+- status:: accepted
+- motivated_by:: [[constraints#Official algo extension fails to load on macOS]] {weight: primary}
+- motivated_by:: [[decisions#Scan tables in the calling transaction]]
+
+## Batches and buckets are cut in Lean
+
+The shim enumerates anchors and key values in the calling transaction; batch sizes and bucket numbers come from Lean (`batchSizes`, `bucketsOf`), so the coverage theorems describe the code that runs.
+
+**Consequences.** `batches_partition`, `violation_unique_batch` and `key_buckets_sound` are about `Marien/Exec/Partition.lean` itself. A batch whose neighbourhood exceeds `elpi_max_facts` is split in halves down to one anchor; errors name the batch (`batch 3 of 5`).
+
+- status:: accepted
+- motivated_by:: [[decisions#Proofs where practical]] {weight: primary}
+- motivated_by:: [[decisions#Partitioned validation]]
+
+## Generated predicates are indexed to depth 2
+
+Every generated predicate declares `:index (2)` on its node and edge arguments (3 for union endpoints), so a lookup compares keys, not only the constructor every fact of a table shares.
+
+**Consequences.** Full-scope joins run about three times faster; they remain linear per lookup until LeanElpi keys its index deeper.
+
+- status:: accepted
+- motivated_by:: [[constraints#Deep indexing scans the first-argument bucket]] {weight: primary}
+
+## Differential properties with a Lean generator and a C runner
+
+Workloads come from a seeded Lean generator; a C runner checks partition equivalence and narrowing against an embedded LadybugDB with the built extension; rejected cases run on Marien's executor in Lean, since the extension refuses them.
+
+**Consequences.** Failures are shrunk by regenerating the seed at smaller sizes and keeping the smallest failing case. The rejection measure is printed, never a failure.
+
+- status:: accepted
+- motivated_by:: [[decisions#Differential testing with an oracle]] {weight: primary}

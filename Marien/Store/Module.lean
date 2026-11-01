@@ -1,6 +1,7 @@
 import Marien.Engine
 import Marien.Encoding.Signature
 import Marien.Store.Literal
+import Marien.Analysis.Verdict
 
 /-!
 # Module store
@@ -10,7 +11,8 @@ here, at bind time of the calling table function, and comes back as Cypher state
 shim returns from `rewriteFunc`, so a write runs in the caller's transaction or not at all.
 
 `save` parses the module, loads it after the generated signature with its accumulated modules
-as libraries, type-checks it, extracts its derived metadata from the clause AST and checks its
+as libraries, type-checks it, extracts its derived metadata from the clause AST, runs the rule
+analyzer over it (reachability, monotonicity, `dynamic`, declared partitions) and checks its
 `accumulate` dependencies; only then does it produce the statement that stores it. Sources are
 embedded as escaped literals (`Literal.quote`), proved to round-trip and to stay inside their
 literal.
@@ -60,6 +62,9 @@ structure Derived where
   /-- Tables whose generated identifiers the module mentions, directly or through accumulated
   modules; the reached-table hash covers exactly these. -/
   reached : List String := []
+  /-- The rule analyzer's verdict for each entry point, its own and those of the modules it
+  accumulates; empty for modules saved before the analyzer existed. -/
+  verdicts : List Analysis.EntryVerdict := []
   deriving Repr, Inhabited, BEq
 
 namespace Derived
@@ -67,7 +72,8 @@ namespace Derived
 def toJson (d : Derived) : Json :=
   Json.mkObj [("declares", Lean.toJson d.declares), ("defines", Lean.toJson d.defines),
     ("calls_generated", Lean.toJson d.callsGenerated), ("accumulates", Lean.toJson d.accumulates),
-    ("entries", Lean.toJson d.entries), ("reached", Lean.toJson d.reached)]
+    ("entries", Lean.toJson d.entries), ("reached", Lean.toJson d.reached),
+    ("verdicts", Json.arr (d.verdicts.map (·.toJson)).toArray)]
 
 def ofJson? (j : Json) : Except String Derived := do
   return { declares := ← j.getObjValAs? (List String) "declares"
@@ -75,7 +81,10 @@ def ofJson? (j : Json) : Except String Derived := do
            callsGenerated := ← j.getObjValAs? (List String) "calls_generated"
            accumulates := ← j.getObjValAs? (List String) "accumulates"
            entries := ← j.getObjValAs? (List String) "entries"
-           reached := (j.getObjValAs? (List String) "reached").toOption.getD [] }
+           reached := (j.getObjValAs? (List String) "reached").toOption.getD []
+           verdicts := ← match j.getObjVal? "verdicts" with
+             | .ok (.arr vs) => vs.toList.mapM Analysis.EntryVerdict.ofJson?
+             | _ => pure [] }
 
 /-- The derived metadata of a stored module; empty if it has none readable. -/
 def ofStored (m : Stored) : Derived :=
@@ -84,6 +93,9 @@ def ofStored (m : Stored) : Derived :=
 
 /-- Whether the module takes part in validation. -/
 def validates (d : Derived) : Bool := d.declares.contains "violation"
+
+/-- The verdict of an entry point. -/
+def verdict? (d : Derived) (pred : String) : Option Analysis.EntryVerdict := d.verdicts.find? (·.pred == pred)
 
 end Derived
 
@@ -242,7 +254,8 @@ def check (schema : Schema) (stored : List Stored) (name source : String) :
   let units := [(signatureUnit, sig.text), (name, source)]
   let libs := (stored.filter (·.name != name)).map fun s => (s.name, s.source)
   let own ← (Engine.clauses units libs (· == name)).mapError errorText
-  let all ← (Engine.clauses units libs (· != signatureUnit)).mapError errorText
+  -- the module, the modules it accumulates and the signature (for the predicates' types)
+  let all ← (Engine.clauses units libs).mapError errorText
   let generated := sig.preds.map (·.1)
   let mentioned := all.clauses.toList.flatMap fun c => termNames c.head ++ goalNames c.body
   checkProtocol own
@@ -252,7 +265,12 @@ def check (schema : Schema) (stored : List Stored) (name source : String) :
   let deps := direct.filterMap fun d => (stored.find? (·.name == d)).map Derived.ofStored
   let declared := own.preds.toList.flatMap (fun p => p.args.toList.flatMap (tyNames ·.ty)) ++
     own.types.toList.flatMap (tyNames ·.2)
-  let reached := (mentioned ++ declared).filterMap sig.tableOf? ++ deps.flatMap (·.reached)
+  let anns ← Analysis.annotations source
+  let entries := (all.preds.toList.map (·.name)).filter (!generated.contains ·)
+  let (verdicts, analysisWarnings) ← Analysis.analyze (.ofAst all sig.preds) sig entries anns
+  let reached := (mentioned ++ declared).filterMap sig.tableOf? ++ deps.flatMap (·.reached) ++
+    verdicts.flatMap (·.tables)
+  let warnings := sig.warnings ++ analysisWarnings
   let derived : Derived :=
     { declares
       defines := (own.clauses.toList.map (·.pred)).eraseDups
@@ -260,10 +278,11 @@ def check (schema : Schema) (stored : List Stored) (name source : String) :
         ((generated.filter mentioned.contains) ++ deps.flatMap (·.callsGenerated)).eraseDups
       accumulates := direct
       entries := declares
-      reached := Schema.sortStrings reached.eraseDups }
+      reached := Schema.sortStrings reached.eraseDups
+      verdicts }
   let hash := Schema.reachedHash derived.reached schema
-  return { name, derived, schemaHash := hash, generated := sig.text, warnings := sig.warnings
-           statement := saveStatement name source hash derived.toJson.compress direct sig.warnings sig.text }
+  return { name, derived, schemaHash := hash, generated := sig.text, warnings
+           statement := saveStatement name source hash derived.toJson.compress direct warnings sig.text }
 
 /-- `elpi_save`: the statements storing one checked module. -/
 def save (schema : Schema) (stored : List Stored) (name source : String) :

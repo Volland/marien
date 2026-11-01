@@ -74,7 +74,7 @@ marien_session *marien_bridge_prepare(const char *catalog, const char *modules, 
 marien_session *marien_bridge_run_prepare(const char *catalog, const char *modules, const char *name,
                                           const char *pred, const char *const *param_names,
                                           marien_values *param_values, uint64_t max_facts,
-                                          uint64_t cache_size, marien_str *error);
+                                          uint64_t cache_size, int narrowed, marien_str *error);
 
 /* The output columns of an elpi_run session: column i is (name, type token...), the type in
  * prefix form (a scalar type name, LIST elem, or STRUCT n then name and type per field). */
@@ -82,13 +82,30 @@ size_t marien_bridge_column_count(marien_session *s);
 marien_strings marien_bridge_column(marien_session *s, size_t i);
 
 /* elpi_validate: the modules to run, in order (the listed ones, or all when `all`), and a
- * session for one module's `violation S C X`. */
+ * session for one module's `violation S C X`. `narrowed` when the call passes a scope (both
+ * prepares then fail unless the entry point is monotone). */
 marien_strings marien_bridge_validate_order(const char *modules, const char *const *names, size_t n, int all);
 marien_session *marien_bridge_validate_prepare(const char *catalog, const char *modules, const char *name,
                                                const char *min_severity, uint64_t max_facts,
-                                               uint64_t cache_size, marien_str *error);
+                                               uint64_t cache_size, int narrowed, marien_str *error);
 
-/* The tables to scan: scan i is ("node" | "rel", table, column...). */
+/* --- Partitions ----------------------------------------------------------------------- */
+
+/* The partition a session runs in: empty for full scope, ("anchor", table, radius, rel, dir...)
+ * or ("key", table, property). */
+marien_strings marien_bridge_partition(marien_session *s);
+
+/* A fresh session for the next anchor batch, keeping only rows whose subject is one of `keys`
+ * (consumed), or for the next key bucket. `base` stays valid. */
+marien_session *marien_bridge_session_batch(marien_session *base, marien_values *keys);
+marien_session *marien_bridge_session_fresh(marien_session *base);
+
+/* Batch sizes for `count` anchors in batches of at most `n`, and the bucket of each key value
+ * (consumed) among `k` (`k` for NULL). The arrays are malloc'ed; *len is their length. */
+uint64_t *marien_bridge_partition_batches(uint64_t n, uint64_t count, size_t *len);
+uint64_t *marien_bridge_partition_buckets(uint64_t k, marien_values *keys, size_t *len);
+
+/* The tables to scan: scan i is ("node" | "rel" | "cycle" | "component", table, ...). */
 size_t marien_bridge_scan_count(marien_session *s);
 marien_strings marien_bridge_scan(marien_session *s, size_t i);
 

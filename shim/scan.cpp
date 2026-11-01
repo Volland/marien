@@ -147,37 +147,44 @@ catalog::NodeTableCatalogEntry* nodeEntry(main::ClientContext& ctx, const std::s
     return e->ptrCast<catalog::NodeTableCatalogEntry>();
 }
 
-void addBatch(marien_session*& s, size_t scan, std::vector<marien_values*>& cols) {
-    auto err = marien_bridge_add_batch(&s, scan, cols.data(), cols.size());
-    cols.clear();
-    if (err.data) throw RuntimeException("marien: " + takeString(err));
-}
+void addBatch(marien_session*& s, size_t scan, std::vector<marien_values*>& cols) { addColumns(s, scan, cols); }
 
-// The primary keys of a node table by offset; deleted rows have none.
-std::vector<std::optional<Value>> keysByOffset(main::ClientContext& ctx, catalog::NodeTableCatalogEntry& e,
-    const std::function<void()>& checkInterrupt) {
-    std::vector<std::optional<Value>> keys;
-    scanNodes(ctx, e, {e.getPrimaryKeyName()}, checkInterrupt,
+// One column of a node table by offset; deleted rows have none.
+std::vector<std::optional<Value>> byOffset(main::ClientContext& ctx, catalog::NodeTableCatalogEntry& e,
+    const std::string& column, const std::function<void()>& checkInterrupt) {
+    std::vector<std::optional<Value>> out;
+    scanNodes(ctx, e, {column}, checkInterrupt,
         [&](const std::vector<offset_t>& offs, const std::vector<std::vector<Value>>& cols) {
             for (size_t i = 0; i < offs.size(); i++) {
-                if (offs[i] >= keys.size()) keys.resize(offs[i] + 1);
-                keys[offs[i]] = cols[0][i];
+                if (offs[i] >= out.size()) out.resize(offs[i] + 1);
+                out[offs[i]] = cols[0][i];
             }
         });
-    return keys;
+    return out;
+}
+
+std::vector<std::optional<Value>> keysByOffset(main::ClientContext& ctx, catalog::NodeTableCatalogEntry& e,
+    const std::function<void()>& checkInterrupt) {
+    return byOffset(ctx, e, e.getPrimaryKeyName(), checkInterrupt);
 }
 
 void scanNodeTable(main::ClientContext& ctx, marien_session*& s, size_t scan,
-    const std::vector<std::string>& desc, const std::function<void()>& checkInterrupt) {
+    const std::vector<std::string>& desc, const std::function<void()>& checkInterrupt, const RowFilter* filter) {
     auto* e = nodeEntry(ctx, desc[1]);
+    bool restricted = filter && filter->restricted(desc[1]);
     std::vector<std::string> columns{e->getPrimaryKeyName()};
     columns.insert(columns.end(), desc.begin() + 2, desc.end());
     scanNodes(ctx, *e, columns, checkInterrupt,
-        [&](const std::vector<offset_t>&, const std::vector<std::vector<Value>>& cols) {
+        [&](const std::vector<offset_t>& offs, const std::vector<std::vector<Value>>& cols) {
+            std::vector<size_t> rows;
+            for (size_t i = 0; i < offs.size(); i++) {
+                if (!restricted || filter->allows(desc[1], offs[i])) rows.push_back(i);
+            }
+            if (rows.empty()) return;
             std::vector<marien_values*> batch;
             for (auto& col : cols) {
-                auto* v = marien_bridge_values_new(col.size());
-                for (auto& x : col) pushValue(v, x);
+                auto* v = marien_bridge_values_new(rows.size());
+                for (auto i : rows) pushValue(v, col[i]);
                 batch.push_back(v);
             }
             addBatch(s, scan, batch);
@@ -194,7 +201,7 @@ struct RelBatch {
 };
 
 void scanRelTable(main::ClientContext& ctx, marien_session*& s, size_t scan,
-    const std::vector<std::string>& desc, const std::function<void()>& checkInterrupt) {
+    const std::vector<std::string>& desc, const std::function<void()>& checkInterrupt, const RowFilter* filter) {
     auto tx = transaction::Transaction::Get(ctx);
     auto cat = catalog::Catalog::Get(ctx);
     auto* rel = cat->getTableCatalogEntry(tx, desc[1])->ptrCast<catalog::RelGroupCatalogEntry>();
@@ -224,6 +231,8 @@ void scanRelTable(main::ClientContext& ctx, marien_session*& s, size_t scan,
         }
         auto& srcKeys = keysOf(src->getName());
         auto& dstKeys = keysOf(dst->getName());
+        bool srcRestricted = filter && filter->restricted(src->getName());
+        bool dstRestricted = filter && filter->restricted(dst->getName());
         std::vector<catalog::TableCatalogEntry*> nodes{src};
         if (dst != src) nodes.push_back(dst);
         graph::OnDiskGraph g(&ctx, graph::NativeGraphEntry(nodes, {rel}));
@@ -231,10 +240,12 @@ void scanRelTable(main::ClientContext& ctx, marien_session*& s, size_t scan,
         for (offset_t o = 0; o < srcKeys.size(); o++) {
             if ((o & 1023) == 0) checkInterrupt();
             if (!srcKeys[o]) continue;
+            if (srcRestricted && !filter->allows(src->getName(), o)) continue;
             for (auto chunk : g.scanFwd(nodeID_t{o, info.nodePair.srcTableID}, *ns)) {
                 chunk.forEach([&](auto nbrs, auto propVecs, auto i) {
                     nodeID_t d = nbrs[i];
                     if (d.offset >= dstKeys.size() || !dstKeys[d.offset]) return;
+                    if (dstRestricted && !filter->allows(dst->getName(), d.offset)) return;
                     auto id = propVecs[0]->template getValue<internalID_t>(i);
                     auto& c = batch->cols;
                     marien_bridge_push_str(c[0], src->getName().data(), src->getName().size());
@@ -262,18 +273,167 @@ std::vector<std::string> toVector(marien_strings& s) {
 
 } // namespace
 
+void addColumns(marien_session*& s, size_t scan, std::vector<marien_values*>& cols) {
+    auto err = marien_bridge_add_batch(&s, scan, cols.data(), cols.size());
+    cols.clear();
+    if (err.data) throw RuntimeException("marien: " + takeString(err));
+}
+
+std::vector<std::optional<Value>> keysByOffset(main::ClientContext& ctx, const std::string& table,
+    const std::function<void()>& checkInterrupt) {
+    return keysByOffset(ctx, *nodeEntry(ctx, table), checkInterrupt);
+}
+
+std::vector<std::optional<Value>> columnByOffset(main::ClientContext& ctx, const std::string& table,
+    const std::string& column, const std::function<void()>& checkInterrupt) {
+    return byOffset(ctx, *nodeEntry(ctx, table), column, checkInterrupt);
+}
+
 // @tg: implements:: [[openspec:rule-execution#Full-scope materialization]]
-void materialize(main::ClientContext& ctx, marien_session*& session, const std::function<void()>& checkInterrupt) {
+void materialize(main::ClientContext& ctx, marien_session*& session, const std::function<void()>& checkInterrupt,
+    const RowFilter* filter) {
     size_t n = marien_bridge_scan_count(session);
     for (size_t i = 0; i < n; i++) {
         auto ms = marien_bridge_scan(session, i);
         auto desc = toVector(ms);
         if (desc[0] == "node") {
-            scanNodeTable(ctx, session, i, desc, checkInterrupt);
+            scanNodeTable(ctx, session, i, desc, checkInterrupt, filter);
+        } else if (desc[0] == "rel") {
+            scanRelTable(ctx, session, i, desc, checkInterrupt, filter);
         } else {
-            scanRelTable(ctx, session, i, desc, checkInterrupt);
+            scanStructure(ctx, session, i, desc, checkInterrupt, filter);
         }
     }
+}
+
+// Breadth first from the anchors, one hop per round, through the graph API.
+// @tg: implements:: [[openspec:partitioning#Anchor partitions]] {confidence: partial, note: "the neighbourhood scan; extension.cpp drives the batches"}
+RowFilter neighbourhood(main::ClientContext& ctx, const std::string& table, const std::vector<uint64_t>& anchors,
+    uint64_t radius, const std::vector<std::pair<std::string, bool>>& steps,
+    const std::function<void()>& checkInterrupt) {
+    auto tx = transaction::Transaction::Get(ctx);
+    auto cat = catalog::Catalog::Get(ctx);
+    RowFilter f;
+    f.restrictAll = true;
+    struct Hop {
+        table_id_t from;
+        std::string to;
+        bool fwd;
+        std::unique_ptr<graph::OnDiskGraph> g;
+        std::unique_ptr<graph::NbrScanState> state;
+    };
+    std::vector<Hop> hops;
+    for (auto& [relName, out] : steps) {
+        auto* rel = cat->getTableCatalogEntry(tx, relName)->ptrCast<catalog::RelGroupCatalogEntry>();
+        for (auto& info : rel->getRelEntryInfos()) {
+            auto* src = cat->getTableCatalogEntry(tx, info.nodePair.srcTableID);
+            auto* dst = cat->getTableCatalogEntry(tx, info.nodePair.dstTableID);
+            std::vector<catalog::TableCatalogEntry*> nodes{src};
+            if (dst != src) nodes.push_back(dst);
+            auto g = std::make_unique<graph::OnDiskGraph>(&ctx, graph::NativeGraphEntry(nodes, {rel}));
+            auto st = g->prepareRelScan(*rel, info.oid, out ? info.nodePair.dstTableID : info.nodePair.srcTableID,
+                {InternalKeyword::ID});
+            hops.push_back({out ? info.nodePair.srcTableID : info.nodePair.dstTableID,
+                (out ? dst : src)->getName(), out, std::move(g), std::move(st)});
+        }
+    }
+    auto* anchorEntry = nodeEntry(ctx, table);
+    std::vector<nodeID_t> frontier;
+    for (auto o : anchors) {
+        if (f.mark(table, o)) frontier.push_back(nodeID_t{o, anchorEntry->getTableID()});
+    }
+    // a table the neighbourhood never reaches is still restricted (no rows)
+    f.allowed[table];
+    for (uint64_t depth = 0; depth < radius && !frontier.empty(); depth++) {
+        std::vector<nodeID_t> next;
+        size_t k = 0;
+        for (auto n : frontier) {
+            if ((k++ & 1023) == 0) checkInterrupt();
+            for (auto& h : hops) {
+                if (h.from != n.tableID) continue;
+                auto it = h.fwd ? h.g->scanFwd(n, *h.state) : h.g->scanBwd(n, *h.state);
+                for (auto chunk : it) {
+                    chunk.forEach([&](auto nbrs, auto, auto i) {
+                        nodeID_t m = nbrs[i];
+                        if (f.mark(h.to, m.offset)) next.push_back(m);
+                    });
+                }
+            }
+        }
+        frontier = std::move(next);
+    }
+    return f;
+}
+
+// @tg: implements:: [[openspec:rule-execution#Narrowed scope for monotone entry points]] {confidence: partial, note: "the scope filter; Lean checks monotonicity"}
+RowFilter scopeFilter(main::ClientContext& ctx, const Value& scope, const std::function<void()>& checkInterrupt,
+    const std::string& fn) {
+    auto tx = transaction::Transaction::Get(ctx);
+    auto cat = catalog::Catalog::Get(ctx);
+    std::vector<std::pair<std::string, const Value*>> entries;
+    auto& type = scope.getDataType();
+    if (type.getLogicalTypeID() == LogicalTypeID::STRUCT) {
+        auto names = StructType::getFieldNames(type);
+        for (size_t k = 0; k < names.size(); k++) entries.emplace_back(names[k], NestedVal::getChildVal(&scope, k));
+    } else if (type.getLogicalTypeID() == LogicalTypeID::MAP) {
+        for (uint32_t k = 0; k < NestedVal::getChildrenSize(&scope); k++) {
+            auto* e = NestedVal::getChildVal(&scope, k);
+            auto* key = NestedVal::getChildVal(e, 0);
+            if (key->isNull() || key->getDataType().getLogicalTypeID() != LogicalTypeID::STRING) {
+                throw RuntimeException(fn + ": scope table names must be strings");
+            }
+            entries.emplace_back(key->getValue<std::string>(), NestedVal::getChildVal(e, 1));
+        }
+    } else {
+        throw RuntimeException(fn + ": the scope must be a map from node tables to key lists, such as {Person: [1, 2]}");
+    }
+    RowFilter f;
+    for (auto& [name, list] : entries) {
+        if (!cat->containsTable(tx, name) ||
+            cat->getTableCatalogEntry(tx, name)->getTableType() != TableType::NODE) {
+            throw RuntimeException(fn + ": scope: " + name + " is not a node table");
+        }
+        auto id = list->getDataType().getLogicalTypeID();
+        if (list->isNull() || (id != LogicalTypeID::LIST && id != LogicalTypeID::ARRAY)) {
+            throw RuntimeException(fn + ": scope: the keys of " + name + " must be a list");
+        }
+        std::unordered_map<std::string, bool> listed;
+        for (uint32_t k = 0; k < NestedVal::getChildrenSize(list); k++) {
+            auto* c = NestedVal::getChildVal(list, k);
+            if (!c->isNull()) listed[c->toString()] = true;
+        }
+        auto* e = nodeEntry(ctx, name);
+        auto keys = keysByOffset(ctx, *e, checkInterrupt);
+        auto& v = f.allowed[e->getName()];
+        v.assign(keys.size(), false);
+        for (size_t o = 0; o < keys.size(); o++) v[o] = keys[o] && listed.count(keys[o]->toString()) > 0;
+    }
+    return f;
+}
+
+std::vector<std::pair<uint64_t, uint64_t>> edgeOffsets(main::ClientContext& ctx, const std::string& relName,
+    const std::function<void()>& checkInterrupt) {
+    auto tx = transaction::Transaction::Get(ctx);
+    auto cat = catalog::Catalog::Get(ctx);
+    auto* rel = cat->getTableCatalogEntry(tx, relName)->ptrCast<catalog::RelGroupCatalogEntry>();
+    std::vector<std::pair<uint64_t, uint64_t>> out;
+    for (auto& info : rel->getRelEntryInfos()) {
+        auto* node = cat->getTableCatalogEntry(tx, info.nodePair.srcTableID);
+        auto live = keysByOffset(ctx, *node->ptrCast<catalog::NodeTableCatalogEntry>(), checkInterrupt);
+        graph::OnDiskGraph g(&ctx, graph::NativeGraphEntry({node}, {rel}));
+        auto ns = g.prepareRelScan(*rel, info.oid, info.nodePair.dstTableID, {InternalKeyword::ID});
+        for (offset_t o = 0; o < live.size(); o++) {
+            if ((o & 1023) == 0) checkInterrupt();
+            if (!live[o]) continue;
+            for (auto chunk : g.scanFwd(nodeID_t{o, info.nodePair.srcTableID}, *ns)) {
+                chunk.forEach([&](auto nbrs, auto, auto i) {
+                    nodeID_t d = nbrs[i];
+                    if (d.offset < live.size() && live[d.offset]) out.emplace_back(o, d.offset);
+                });
+            }
+        }
+    }
+    return out;
 }
 
 std::string storedModulesJson(main::ClientContext& ctx) {
