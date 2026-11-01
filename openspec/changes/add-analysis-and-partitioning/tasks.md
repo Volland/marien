@@ -35,7 +35,7 @@
 - [x] 4.2 Partition equivalence property at batch sizes 1, 7 and default
 - [x] 4.3 Narrowing subset property
 - [x] 4.4 Rejection counterexample search and the tracked rejection measure
-- [ ] 4.5 Run the properties in CI against an embedded LadybugDB with the built extension
+- [x] 4.5 Run the properties in CI against an embedded LadybugDB with the built extension
 
 ## 5. Traceability annotations
 
