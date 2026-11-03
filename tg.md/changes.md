@@ -35,7 +35,7 @@ Implemented: the Lean layers with their five proofs (54 Lean tests), the C++ shi
 
 M2: typed `elpi_run`, the `violation` protocol and `elpi_validate`, lazy recheck by schema hash, and distribution from Marien's extension server.
 
-Implemented: typed entry points, validation and schema evolution with six proofs (75 Lean tests, 52 integration tests on macOS arm64 and Linux aarch64), the out-of-tree build, the load-time version check and the release workflow. Open: the release's first run, and `INSTALL marien FROM`, which LadybugDB 0.22.1 refuses for non-official names ([[constraints#INSTALL accepts only official extensions]]).
+Implemented: typed entry points, validation and schema evolution with six proofs (75 Lean tests, 52 integration tests on macOS arm64 and Linux aarch64), the out-of-tree build, the load-time version check and the release workflow, first published as v0.3.0 (four platforms, GitHub release and the Pages extension server). Open: `INSTALL marien FROM`, which LadybugDB 0.22.1 refuses for non-official names ([[constraints#INSTALL accepts only official extensions]]).
 
 - status:: proposed
 
