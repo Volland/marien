@@ -1,0 +1,32 @@
+<!-- Marien: a ladybug (Marienkäfer) whose wing seam is a λ and whose spots are term trees. -->
+<svg role="img" aria-label="Marien" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <filter id="sticker" x="-10%" y="-10%" width="120%" height="120%">
+      <feMorphology in="SourceAlpha" operator="dilate" radius="9" result="grown"/>
+      <feFlood flood-color="#fbf7f2"/>
+      <feComposite in2="grown" operator="in" result="edge"/>
+      <feMerge><feMergeNode in="edge"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g filter="url(#sticker)">
+  <g stroke="#1b1a1f" stroke-linecap="round" fill="none" stroke-width="16">
+    <path d="M214 104 Q196 64 166 52"/><path d="M298 104 Q316 64 346 52"/>
+    <path d="M110 236 L68 212"/><path d="M92 318 L46 322"/><path d="M116 398 L76 436"/>
+    <path d="M402 236 L444 212"/><path d="M420 318 L466 322"/><path d="M396 398 L436 436"/>
+  </g>
+  <circle cx="166" cy="52" r="14" fill="#1b1a1f"/><circle cx="346" cy="52" r="14" fill="#1b1a1f"/>
+  <ellipse cx="256" cy="146" rx="80" ry="62" fill="#1b1a1f"/>
+  <circle cx="224" cy="126" r="10" fill="#fff"/><circle cx="288" cy="126" r="10" fill="#fff"/>
+  <circle cx="256" cy="304" r="172" fill="#d7263d"/>
+  <g stroke="#8e1426" stroke-width="7" stroke-linecap="round" fill="none">
+    <path d="M168 238 L146 342"/><path d="M168 238 L214 300"/>
+    <path d="M354 232 L384 332"/><path d="M354 232 L336 410"/>
+  </g>
+  <g fill="#1b1a1f">
+    <circle cx="168" cy="238" r="27"/><circle cx="146" cy="342" r="22"/><circle cx="214" cy="300" r="15"/>
+    <circle cx="354" cy="232" r="27"/><circle cx="384" cy="332" r="23"/><circle cx="336" cy="410" r="18"/>
+  </g>
+  <path d="M206 146 C234 128 258 136 266 182 L306 466" stroke="#1b1a1f" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M282 290 L198 456" stroke="#1b1a1f" stroke-width="24" stroke-linecap="round" fill="none"/>
+  </g>
+</svg>

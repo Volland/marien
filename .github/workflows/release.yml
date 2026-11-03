@@ -4,7 +4,7 @@
 # three, and publish only when every entry passed: `publish` needs the whole matrix, so one
 # failing entry blocks the release of all of them. The published site has the layout LadybugDB's
 # extension installer fetches (scripts/package-extension.sh); each artifact is also attached to
-# the GitHub release.
+# the GitHub release. The landing page (web/, scripts/build-site.sh) goes on top.
 name: release
 
 on:
@@ -81,7 +81,11 @@ jobs:
       name: github-pages
     env:
       GH_TOKEN: ${{ github.token }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -92,6 +96,7 @@ jobs:
             cp -R "$d"/. site/
             (cd "$d" && zip -qr "../../$(basename "$d").zip" .)
           done
+          scripts/build-site.sh site "${{ github.ref_name }}"
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

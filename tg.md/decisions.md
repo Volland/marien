@@ -427,13 +427,23 @@ Record: `openspec/changes/add-typed-validation/design.md`.
 
 `scripts/release-matrix.sh` lists the supported LadybugDB versions, OSes and CPUs; the release workflow builds and tests each entry, names its artifact after all three, and publishes only when every entry passed.
 
-**Context.** One build per LadybugDB version, OS and CPU is the only way an extension loads. **Consequences.** Adding a LadybugDB version is a one-line change; `scripts/check-release-workflow.sh` checks the shape on every push. The macOS x86_64 and Linux x86_64 entries run first at the next tag.
+**Context.** One build per LadybugDB version, OS and CPU is the only way an extension loads. **Consequences.** Adding a LadybugDB version is a one-line change; `scripts/check-release-workflow.sh` checks the shape on every push. All four entries first shipped together in v0.3.0.
 
 Record: `openspec/changes/add-typed-validation/design.md`.
 
 - status:: accepted
 - motivated_by:: [[decisions#Out-of-tree extension with its own repository]] {weight: primary}
 - motivated_by:: [[constraints#Extensions are C++ shared libraries]]
+
+## Landing page on the extension server
+
+The Pages site that serves the extension layout also carries Marien's landing page and logo from `web/`, laid over the layout by `scripts/build-site.sh` with the release and LadybugDB versions filled in.
+
+**Context.** A Pages deployment replaces the whole site, so the page cannot be deployed apart from the extension files. **Consequences.** Releases deploy both; between releases `pages.yml` rebuilds the site from the latest release's zips plus the page, and both workflows share one concurrency group. The logo is a ladybug (Marienkäfer) whose wing seam is a λ and whose spots are term trees.
+
+- status:: accepted
+- motivated_by:: [[decisions#Releases built from one matrix script]] {weight: primary}
+- motivated_by:: [[constraints#INSTALL accepts only official extensions]] {note: "the page tells users to load by path"}
 
 ## Analysis on the clause AST at save and recheck
 

@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Marien</title>
+<meta name="description" content="λProlog rules inside LadybugDB: store LeanElpi programs in the graph, type them against its schema, and run them to query and validate it.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #fbf7f2; --panel: #ffffff; --ink: #1b1a1f; --muted: #5f5a66; --line: #e7dfd6;
+    --red: #d7263d; --red-deep: #8e1426; --code-bg: #1b1a1f; --code-ink: #f1ece6;
+    --code-dim: #9a93a3; --code-str: #ffb4a8; --code-kw: #ff6b7d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #141317; --panel: #1d1b21; --ink: #f1ece6; --muted: #a9a2b2; --line: #2e2b33;
+      --red: #ef4258; --red-deep: #ff8a98; --code-bg: #0d0c10;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #141317; --panel: #1d1b21; --ink: #f1ece6; --muted: #a9a2b2; --line: #2e2b33;
+    --red: #ef4258; --red-deep: #ff8a98; --code-bg: #0d0c10;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font: 17px/1.6 "IBM Plex Sans", system-ui, sans-serif;
+  }
+  a { color: var(--red); text-underline-offset: 3px; }
+  a:hover { color: var(--red-deep); }
+  .hero > *, .steps > *, .features > *, .name > * { min-width: 0; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 16px; }
+  nav { display: flex; align-items: center; justify-content: space-between; padding: 20px 0; }
+  nav .brand { display: flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none;
+    font: 700 20px "Fraunces", serif; }
+  nav .brand img { width: 30px; height: 30px; }
+  nav .links { display: flex; gap: 20px; font-size: 15px; }
+  nav .links a { color: var(--muted); text-decoration: none; }
+  nav .links a:hover { color: var(--ink); }
+
+  .hero { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 40px; align-items: center; padding: 48px 0 64px; }
+  .hero h1 { font: 700 clamp(44px, 7vw, 76px)/1.02 "Fraunces", serif; letter-spacing: -0.02em; margin: 0 0 18px; }
+  .hero h1 em { font-style: normal; color: var(--red); }
+  .hero p.lede { font-size: 20px; color: var(--muted); margin: 0 0 28px; max-width: 34em; }
+  .hero .logo { width: 100%; max-width: 360px; justify-self: center; filter: drop-shadow(0 18px 30px rgba(142, 20, 38, 0.18)); }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; }
+  .btn { display: inline-block; padding: 11px 20px; border-radius: 999px; font-weight: 600; font-size: 15px;
+    text-decoration: none; border: 1.5px solid var(--ink); color: var(--ink); }
+  .btn.primary { background: var(--red); border-color: var(--red); color: #fff; }
+  .btn.primary:hover { background: var(--red-deep); border-color: var(--red-deep); color: #fff; }
+  .btn:hover { color: var(--ink); background: var(--panel); }
+  .tag { font: 500 13px "IBM Plex Mono", monospace; color: var(--muted); margin-top: 18px; }
+
+  section { padding: 56px 0; border-top: 1px solid var(--line); }
+  h2 { font: 700 34px/1.15 "Fraunces", serif; margin: 0 0 10px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); margin: 0 0 28px; max-width: 40em; }
+
+  .features { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; }
+  .feature { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 22px 24px; }
+  .feature h3 { margin: 0 0 6px; font-size: 18px; display: flex; gap: 10px; align-items: baseline; }
+  .feature h3 .glyph { font: 500 18px "IBM Plex Mono", monospace; color: var(--red); }
+  .feature p { margin: 0; color: var(--muted); font-size: 16px; }
+
+  pre { margin: 0; background: var(--code-bg); color: var(--code-ink); border-radius: 14px; padding: 20px 22px;
+    overflow-x: auto; font: 14px/1.65 "IBM Plex Mono", ui-monospace, monospace; }
+  pre .c { color: var(--code-dim); }
+  pre .s { color: var(--code-str); }
+  pre .k { color: var(--code-kw); }
+  code { font: 0.9em "IBM Plex Mono", ui-monospace, monospace; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+  .steps { display: grid; gap: 26px; }
+  .step-label { font: 600 13px "IBM Plex Mono", monospace; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--red); margin-bottom: 8px; }
+  .out { margin-top: 8px; font: 13px/1.6 "IBM Plex Mono", monospace; color: var(--muted); padding-left: 4px; }
+
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; overflow: hidden; font-size: 15px; }
+  th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  th { font-weight: 600; color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; }
+  tr:last-child td { border-bottom: 0; }
+  td a { font-family: "IBM Plex Mono", monospace; font-size: 14px; word-break: break-all; }
+  .table-wrap { overflow-x: auto; }
+  .note { margin-top: 16px; font-size: 15px; color: var(--muted); }
+
+  .name { display: grid; grid-template-columns: auto 1fr; gap: 24px; align-items: center; }
+  .name .big { font: 700 64px/1 "Fraunces", serif; color: var(--red); }
+  footer { padding: 32px 0 48px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px;
+    display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; }
+
+  @media (max-width: 760px) {
+    .hero { grid-template-columns: 1fr; padding-top: 16px; gap: 24px; }
+    .hero .logo { max-width: 220px; order: -1; }
+    .features { grid-template-columns: 1fr; }
+    nav .links { gap: 14px; font-size: 14px; }
+    nav .links a[href="#example"] { display: none; }
+    .name { grid-template-columns: 1fr; gap: 8px; }
+    .name .big { font-size: 48px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="brand" href="./"><img src="favicon.svg" alt="">Marien</a>
+    <div class="links">
+      <a href="#example">Example</a>
+      <a href="#download">Download</a>
+      <a href="https://github.com/Volland/marien">GitHub</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div>
+      <h1>Logic rules that live <em>in your graph.</em></h1>
+      <p class="lede">Marien is a LadybugDB extension that stores λProlog programs in the database, types them against the graph's schema, and runs them to query and validate the graph, all from Cypher.</p>
+      <div class="cta">
+        <a class="btn primary" href="#download">Download v__VERSION__</a>
+        <a class="btn" href="https://github.com/Volland/marien">Source on GitHub</a>
+      </div>
+      <div class="tag">Written in Lean 4 · runs LeanElpi · for LadybugDB __LBUG__</div>
+    </div>
+    <img class="logo" src="logo.svg" alt="Marien logo: a ladybug whose wing seam is a lambda">
+  </header>
+
+  <section>
+    <h2>What it does</h2>
+    <p class="sub">Your rules are saved as modules next to the data they reason about, and checked against the schema when you save them and again whenever the schema changes.</p>
+    <div class="features">
+      <div class="feature">
+        <h3><span class="glyph">λ</span>Typed by the schema</h3>
+        <p>Every node table, rel table and property becomes a λProlog type and predicate. A rule that misspells a property or mixes up types fails at save time, not at 3 a.m.</p>
+      </div>
+      <div class="feature">
+        <h3><span class="glyph">⊢</span>Validation as a protocol</h3>
+        <p>Declare <code>violation</code> in any module and <code>elpi_validate</code> runs all of them, returning one uniform report: severity, code, message and the offending node.</p>
+      </div>
+      <div class="feature">
+        <h3><span class="glyph">∂</span>Analysed before it runs</h3>
+        <p>Marien works out which tables a rule reaches, whether it is monotone, and how far from its subject it looks. It loads only what a rule needs and refuses scopes that would change the answer.</p>
+      </div>
+      <div class="feature">
+        <h3><span class="glyph">▦</span>Partitioned for big graphs</h3>
+        <p>Rules that stay near their subject run batch by batch, each in a fresh store with its own limits. Lean proves that every subject lands in exactly one batch, so no violation is reported twice.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="example">
+    <h2>From graph to verdict</h2>
+    <p class="sub">A small org chart, one module of rules, then a typed query and a validation run.</p>
+    <div class="steps">
+      <div>
+        <div class="step-label">1 · Load and set up</div>
+<pre><span class="k">LOAD EXTENSION</span> <span class="s">'./libmarien.lbug_extension'</span>;
+<span class="k">CALL</span> elpi_init();    <span class="c">// creates Marien's module storage, once per database</span>
+
+<span class="k">CREATE NODE TABLE</span> Person(id INT64 PRIMARY KEY, name STRING, title STRING);
+<span class="k">CREATE REL TABLE</span> ReportsTo(FROM Person TO Person);</pre>
+      </div>
+      <div>
+        <div class="step-label">2 · Save a module</div>
+<pre><span class="k">CALL</span> elpi_save(<span class="s">'org'</span>, <span class="s">'
+  pred manager_of i:person, o:person, o:string.
+  manager_of P M T :- reports_to P _ M, person.title M T.
+
+  pred violation o:severity, o:string, o:subject.
+  violation error "no-manager" (subj_person P) :-
+    person.name P _, not (reports_to P _ _).
+  violation warning "no-title" (subj_person P) :-
+    person P, not (person.title P _).
+'</span>);</pre>
+        <div class="out">Types <code>person</code>, <code>person.title</code> and <code>reports_to</code> come from the schema; a typo here is a save error.</div>
+      </div>
+      <div>
+        <div class="step-label">3 · Ask a typed question</div>
+<pre><span class="k">CALL</span> elpi_run(<span class="s">'org'</span>, <span class="s">'manager_of'</span>, {in1: 7})
+<span class="k">WITH</span> out2 <span class="k">MATCH</span> (m:Person {id: out2})
+<span class="k">RETURN</span> m.name, out3;</pre>
+        <div class="out">→ ceo | CEO</div>
+      </div>
+      <div>
+        <div class="step-label">4 · Validate the graph</div>
+<pre><span class="k">CALL</span> elpi_validate([<span class="s">'org'</span>]) <span class="k">WHERE</span> severity = <span class="s">'error'</span>
+<span class="k">RETURN</span> code, subject_label, subject_pk;</pre>
+        <div class="out">→ no-manager | Person | 3<br>→ no-manager | Person | 9</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="download">
+    <h2>Download</h2>
+    <p class="sub">Version __VERSION__, built and tested against LadybugDB __LBUG__. Each zip holds one file, <code>libmarien.lbug_extension</code>.</p>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Platform</th><th>File</th></tr></thead>
+      <tbody>
+        <tr><td>macOS, Apple silicon</td><td><a href="https://github.com/Volland/marien/releases/download/v__VERSION__/marien-v__VERSION__-lbug__LBUG__-osx-arm64.zip">marien-v__VERSION__-lbug__LBUG__-osx-arm64.zip</a></td></tr>
+        <tr><td>macOS, Intel</td><td><a href="https://github.com/Volland/marien/releases/download/v__VERSION__/marien-v__VERSION__-lbug__LBUG__-osx-amd64.zip">marien-v__VERSION__-lbug__LBUG__-osx-amd64.zip</a></td></tr>
+        <tr><td>Linux, arm64</td><td><a href="https://github.com/Volland/marien/releases/download/v__VERSION__/marien-v__VERSION__-lbug__LBUG__-linux-arm64.zip">marien-v__VERSION__-lbug__LBUG__-linux-arm64.zip</a></td></tr>
+        <tr><td>Linux, x86_64</td><td><a href="https://github.com/Volland/marien/releases/download/v__VERSION__/marien-v__VERSION__-lbug__LBUG__-linux-amd64.zip">marien-v__VERSION__-lbug__LBUG__-linux-amd64.zip</a></td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="note">Unzip it and run <code>LOAD EXTENSION '&lt;path&gt;/libmarien.lbug_extension'</code>. This site also serves the layout <code>INSTALL marien FROM</code> expects, but LadybugDB __LBUG__ installs only its own official extensions by name, so loading by path is the way for now. Release notes are on <a href="https://github.com/Volland/marien/releases/tag/v__VERSION__">GitHub</a>.</p>
+  </section>
+
+  <section>
+    <div class="name">
+      <div class="big">Marienkäfer</div>
+      <p class="sub" style="margin:0">German for ladybug, the bug in LadybugDB. In the logo, the seam between its wing cases is a λ, and its spots are small term trees.</p>
+    </div>
+  </section>
+
+  <footer>
+    <span>Marien __VERSION__ · built on <a href="https://github.com/Volland/lean-elpi">LeanElpi</a> and <a href="https://github.com/LadybugDB/ladybug">LadybugDB</a></span>
+    <a href="https://github.com/Volland/marien">github.com/Volland/marien</a>
+  </footer>
+</div>
+</body>
+</html>

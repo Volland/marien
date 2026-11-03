@@ -1,0 +1,39 @@
+# The Pages site between releases: when the landing page (web/) changes on main, rebuild the site
+# from the latest release's zips plus the page, so the extension-server layout stays in place.
+# Releases deploy the same site from their own build (release.yml).
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths: ['web/**', 'scripts/build-site.sh', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: The latest release's extension server and the landing page
+        run: |
+          TAG="$(gh release view -R "${{ github.repository }}" --json tagName -q .tagName)"
+          mkdir -p zips site
+          gh release download "$TAG" -R "${{ github.repository }}" -p '*.zip' -D zips
+          for z in zips/*.zip; do unzip -qo "$z" -d site; done
+          scripts/build-site.sh site "$TAG"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - uses: actions/deploy-pages@v4
