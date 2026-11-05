@@ -7,8 +7,8 @@
 - [x] 1.5 Locality check: guarded atoms within radius, recorded directions, subject-is-anchor rule; key-partition join check (`Marien/Analysis/Locality.lean`)
 - [x] 1.6 Recompute verdicts in M2's lazy recheck and in `elpi_recheck`
 - [x] 1.7 Prove `Marien.Analysis.reach_closed`
-- [ ] 1.8 (optional, stretch) Define an abstract finite Horn-with-negation semantics of the analysed fragment and prove `Marien.Analysis.monotone_sound`
-- [ ] 1.9 (optional, stretch) Prove `Marien.Analysis.locality_sound` over that semantics; update the open question in `tg.md/overview.md`
+- [x] 1.8 (optional, stretch) Define an abstract finite Horn-with-negation semantics of the analysed fragment and prove `Marien.Analysis.monotone_sound` (`Marien/Analysis/Semantics.lean`: staged ground Horn semantics with stratified negation; `monotone_sound`, and `static_independent` for the stratum that decides negation)
+- [x] 1.9 (optional, stretch) Prove `Marien.Analysis.locality_sound` over that semantics; update the open question in `tg.md/overview.md` (`Marien.Analysis.Semantics.locality_sound`)
 
 ## 2. Narrowed scope
 

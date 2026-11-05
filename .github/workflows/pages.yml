@@ -36,4 +36,7 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
-      - uses: actions/deploy-pages@v4
+      - id: deploy
+        uses: actions/deploy-pages@v4
+      - name: The published site serves every entry
+        run: scripts/check-site.sh "${{ steps.deploy.outputs.page_url }}" site

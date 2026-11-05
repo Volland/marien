@@ -167,7 +167,7 @@ Each guarantee about answers has one guard that enforces it and one test or proo
 
 ## Deployment
 
-One file, `libmarien.lbug_extension`, built per LadybugDB version, OS and CPU, served from Marien's own extension server and installed with `INSTALL marien FROM <url>`.
+One file, `libmarien.lbug_extension`, built per LadybugDB version, OS and CPU, served from Marien's own extension server, downloaded and loaded with `LOAD EXTENSION '<path>'` (`INSTALL marien FROM <url>` once LadybugDB accepts third-party names).
 
 ```mermaid
 flowchart LR
@@ -177,8 +177,8 @@ flowchart LR
     link[link, hidden visibility,<br/>export init only] --> lib[[libmarien.lbug_extension]]
   end
   lib --> srv[(extension server)]
-  srv -- "INSTALL marien FROM url" --> db[(LadybugDB)]
-  db -- "LOAD marien" --> run[extension loaded]
+  srv -- "download" --> file[local file]
+  file -- "LOAD EXTENSION path" --> db[(LadybugDB)]
 ```
 
 - illustrates:: [[decisions#Out-of-tree extension with its own repository]]

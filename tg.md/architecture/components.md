@@ -211,7 +211,7 @@ M3: a module whose `violation` has an accepted partition runs batch by batch; a 
 
 Per entry point: reached predicates, monotonicity, dynamic inference and the locality check that permits anchor partitions. Source: `Marien/Analysis/`.
 
-Soundness of monotonicity and locality is a stretch theorem; property tests guard it in v1.
+Soundness of monotonicity and locality is proved over an abstract semantics of the analysed fragment (`Semantics`: `monotone_sound`, `locality_sound`, `static_independent`); the property tests check the real engine.
 
 `Reach` builds the call graph (variable calls over-approximated by type) and its closure (`reach_closed`); `Monotone` finds the first `not`, cut, `forall` or `findall` over the database and the `=>` goals that make an entry point dynamic; `Locality` inlines helpers and checks anchor and key partitions; `Verdict` stores the result with the module.
 

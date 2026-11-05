@@ -23,11 +23,15 @@ Continuous integration SHALL build and test the extension for every entry of a m
 - **THEN** no artifact of that release is published
 
 ### Requirement: Install from extension server
-The release SHALL publish its artifacts to an extension server laid out the way LadybugDB's `INSTALL <name> FROM '<url>'` expects, so that `INSTALL marien FROM '<url>'` followed by `LOAD marien` installs and loads the build matching the running LadybugDB, OS and CPU.
+The release SHALL publish every matrix entry to an extension server laid out the way LadybugDB's `INSTALL <name> FROM '<url>'` fetches, `v<extension version>/<os>_<arch>/marien/libmarien.lbug_extension`, and SHALL attach one zip per entry to the release. A user SHALL be able to download the build matching the running LadybugDB, OS and CPU from that layout and load it with `LOAD EXTENSION '<path>'`. `INSTALL marien FROM '<url>'` with `LOAD marien` is not required while LadybugDB installs only the names on its official list; the layout stays ready for it.
 
-#### Scenario: Install and load
-- **WHEN** a user of a supported LadybugDB runs `INSTALL marien FROM '<url>'` and `LOAD marien`
+#### Scenario: Download and load
+- **WHEN** a user of a supported LadybugDB downloads the library for their OS and CPU from the extension server and runs `LOAD EXTENSION` with its path
 - **THEN** `CALL elpi_signature() RETURN *` succeeds
+
+#### Scenario: Every entry is served
+- **WHEN** a release is published
+- **THEN** the extension server serves the library of every matrix entry at its layout path, byte for byte the artifact that was tested
 
 ### Requirement: LadybugDB version check
 On load, the extension SHALL compare the running LadybugDB version with the pinned version it was built against and SHALL refuse to register any function when they differ, failing `LOAD` with an error that names both versions.

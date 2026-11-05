@@ -4,7 +4,7 @@ M1 proves the stack end to end with `elpi_query`, which returns strings. Ladybug
 
 ## Goals / Non-Goals
 
-**Goals:** typed `elpi_run`; `violation` and `elpi_validate` with one report shape; correct behaviour after any DDL; an install path through `INSTALL … FROM`.
+**Goals:** typed `elpi_run`; `violation` and `elpi_validate` with one report shape; correct behaviour after any DDL; an install path from Marien's extension server (download and `LOAD EXTENSION`; `INSTALL … FROM` once LadybugDB accepts third-party names).
 
 **Non-Goals:** narrowed scope and partitioning (M3); schema annotations and generated rules (M4); eager rechecks through an upstream DDL hook; custom statements.
 
@@ -100,3 +100,4 @@ Per [[decisions#Proofs where practical]] ([[adr:0020]]):
 - [Risk] Recomputing the hash on every bind costs a catalog read. → The catalog is in memory; the hash covers only reached tables; measure in the tracer benchmark.
 - [Trade-off] Full scope only in this milestone, so validation is limited to graphs that fit `elpi_max_facts`. M3 lifts this.
 - [Risk] Extension server layout follows LadybugDB's undocumented `INSTALL … FROM` conventions. → Pin to the version's source and test install in CI.
+- [Constraint] LadybugDB 0.22.1 refuses `INSTALL` and `LOAD <name>` for names outside its official list. → The requirement is download and `LOAD EXTENSION` from the same layout; CI loads from a local server in that layout and checks that the published site serves every entry.

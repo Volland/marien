@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
+# @tg: verifies:: [[openspec:distribution#Install from extension server#Download and load]] {level: e2e}
 # Serve a packaged extension over HTTP in the extension-server layout, download it as a user
 # would and load it into LadybugDB's CLI by path, then call elpi_signature.
 #
 # LadybugDB 0.22.1 accepts `INSTALL <name> FROM '<url>'` and `LOAD <name>` only for the names on
 # its built-in list of official extensions, so `INSTALL marien FROM ...` is refused before any
 # download; until that changes, users fetch the file from the same layout and use
-# `LOAD EXTENSION '<path>'`. This script checks that path; it does not verify the scenario
-# "Install and load" (constraint "INSTALL accepts only official extensions").
+# `LOAD EXTENSION '<path>'`, which is what the requirement asks for (constraint "INSTALL accepts
+# only official extensions"). This script checks that path.
 #   test-install.sh <extension> [lbug-cli]
 set -euo pipefail
 EXT="$1"; CLI="${2:-$(cd "$(dirname "$0")/.." && pwd)/.deps/cli/lbug}"

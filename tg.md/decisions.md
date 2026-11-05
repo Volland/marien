@@ -183,7 +183,7 @@ Record: [ADR 0016](../docs/adr/0016-partitioned-validation.md).
 
 ## Out-of-tree extension with its own repository
 
-Marien lives in its own repository, pinned to a LadybugDB version, and is installed with `INSTALL marien FROM <url>`; contributing it to `ladybugdb/extensions` is proposed once stable.
+Marien lives in its own repository, pinned to a LadybugDB version, and is served from its own extension server ([[decisions#Install by download until INSTALL accepts third-party names]]); contributing it to `ladybugdb/extensions` is proposed once stable.
 
 **Context.** Upstream builds with CMake and has no Lean toolchain. **Consequences.** CI builds a matrix of LadybugDB version, OS and CPU. The spike measured 2.7 MB uncompressed and 0.8 MB gzipped on macOS arm64 with dead-stripping, and no symbol clashes with other extensions.
 
@@ -220,7 +220,7 @@ Record: [ADR 0019](../docs/adr/0019-milestone-order.md).
 
 Lean code proves properties that are total statements over inductive data and have small proofs; operational behaviour of the engine is covered by property tests.
 
-**Context.** Codec round-trips, name injectivity, exclusion of `_elpi_*` tables, hash determinism and partition coverage would otherwise rot silently. **Consequences.** Every design lists its key properties as proved (theorem and file) or tested (with the reason). Soundness of the monotonicity and locality checks over an abstract semantics is a stretch goal, guarded by property tests until proved.
+**Context.** Codec round-trips, name injectivity, exclusion of `_elpi_*` tables, hash determinism and partition coverage would otherwise rot silently. **Consequences.** Every design lists its key properties as proved (theorem and file) or tested (with the reason). Soundness of the monotonicity and locality checks is proved over an abstract semantics ([[decisions#Analysis soundness over an abstract Horn semantics]]); property tests check the engine itself.
 
 Record: [ADR 0020](../docs/adr/0020-proofs-where-practical.md).
 
@@ -367,7 +367,7 @@ Record: `openspec/changes/add-tracer-bullet/design.md`.
 
 **Context.** Columns are fixed before solving, and only a `pred` declaration carries modes (a `type … -> prop` defaults every argument to `o`). **Consequences.** A predicate declared with `type` only is rejected, as is an argument without a column mapping. Node kinds become their table's primary-key type, edge kinds the internal id. Cells cross to the shim as typed prefix tokens and are never printed. `value_roundtrip` and `decodeC_sound` prove the column codec.
 
-Record: `openspec/changes/add-typed-validation/design.md`.
+Record: `openspec/changes/archive/2026-11-05-add-typed-validation/design.md`.
 
 - status:: accepted
 - motivated_by:: [[decisions#Typed entry points and an untyped debug query]] {weight: primary}
@@ -380,7 +380,7 @@ Every signature declares `kind subject type.` with one constructor `subj_<table>
 
 **Context.** A string subject loses typing in rules; one `violation_<table>` per table loses the single entry point. **Consequences.** The protocol's names join the injective-naming check, so a table called `Subject` is refused rather than shadowing the kind. `subject_decode_encode` and `subject_encode_decode` prove the codec, given unique constructors and labels.
 
-Record: `openspec/changes/add-typed-validation/design.md`.
+Record: `openspec/changes/archive/2026-11-05-add-typed-validation/design.md`.
 
 - status:: accepted
 - motivated_by:: [[decisions#Validation protocol]] {weight: primary}
@@ -393,7 +393,7 @@ Called generated predicates are collected the same way.
 
 **Context.** The engine's clause view holds the module's own clauses, not those of accumulated libraries. **Consequences.** The reached-table hash covers a library's tables too, and a run loads the facts an accumulated module's clauses need (M1 missed them). A module saved before reached tables were recorded is hashed over the whole schema.
 
-Record: `openspec/changes/add-typed-validation/design.md`.
+Record: `openspec/changes/archive/2026-11-05-add-typed-validation/design.md`.
 
 - status:: accepted
 - motivated_by:: [[decisions#Lazy recheck by schema hash]] {weight: primary}
@@ -404,7 +404,7 @@ A run compares the module's reached-table hash with the cache key; a new hash co
 
 **Context.** A `CALL` in a read query cannot write, and there is no DDL hook. **Consequences.** No run ever uses an older compilation after the schema changed. `stale` exists only as `elpi_recheck`'s old status; `broken` is stored with its error, and saving the module clears it.
 
-Record: `openspec/changes/add-typed-validation/design.md`.
+Record: `openspec/changes/archive/2026-11-05-add-typed-validation/design.md`.
 
 - status:: accepted
 - motivated_by:: [[decisions#Read-only runs]] {weight: primary}
@@ -417,7 +417,7 @@ On load the extension compares the running LadybugDB's release with the pinned o
 
 **Context.** liblbug exports the release version; the CLI does not, and an undefined symbol would make the library fail to load with a linker message. **Consequences.** In applications on liblbug a mismatch is refused exactly; in the CLI only across storage versions, so a patch release of the same storage version is not told apart.
 
-Record: `openspec/changes/add-typed-validation/design.md`.
+Record: `openspec/changes/archive/2026-11-05-add-typed-validation/design.md`.
 
 - status:: accepted
 - motivated_by:: [[constraints#The CLI does not export the release version]] {weight: primary}
@@ -429,7 +429,7 @@ Record: `openspec/changes/add-typed-validation/design.md`.
 
 **Context.** One build per LadybugDB version, OS and CPU is the only way an extension loads. **Consequences.** Adding a LadybugDB version is a one-line change; `scripts/check-release-workflow.sh` checks the shape on every push. All four entries first shipped together in v0.3.0.
 
-Record: `openspec/changes/add-typed-validation/design.md`.
+Record: `openspec/changes/archive/2026-11-05-add-typed-validation/design.md`.
 
 - status:: accepted
 - motivated_by:: [[decisions#Out-of-tree extension with its own repository]] {weight: primary}
@@ -451,7 +451,7 @@ The rule analyzer runs on the clause AST of a module and the modules it accumula
 
 **Context.** Narrowed scopes and partitions are safe only when an analysis says so, and the answer must match the compiled code. **Consequences.** A verdict holds what the entry point reaches (runs load only those tables), whether it is monotone or `dynamic` and why, and its accepted partition. A run after a schema change analyses again in memory; `elpi_recheck` stores the new verdicts. Reachability is a closure proved closed (`reach_closed`). Positions in verdicts are those of the clause holding the construct: the AST has no positions for single goals.
 
-Record: `openspec/changes/add-analysis-and-partitioning/design.md`.
+Record: `openspec/changes/archive/2026-11-05-add-analysis-and-partitioning/design.md`.
 
 - status:: accepted
 - motivated_by:: [[decisions#Closed-world scope]] {weight: primary}
@@ -522,3 +522,23 @@ Workloads come from a seeded Lean generator; a C runner checks partition equival
 
 - status:: accepted
 - motivated_by:: [[decisions#Differential testing with an oracle]] {weight: primary}
+
+## Analysis soundness over an abstract Horn semantics
+
+The monotonicity and locality checks are proved sound over a staged ground Horn semantics with stratified negation, not over LeanElpi's operational semantics; the differential properties check the engine.
+
+**Context.** The checks are syntactic, and a proof over LeanElpi's search would need a formal model of the engine. **Consequences.** `Marien/Analysis/Semantics.lean` proves `monotone_sound` (a sub-database gives no new answers), `locality_sound` (answers near the subject are the same on its neighbourhood) and `static_independent` (a stratum that reads no database fact answers the same on every database). What links the theorems to the checks is stated in the file: negated goals reach no database predicate, and every atom a clause about the subject reads lies within the radius. Cut and `forall` are outside the fragment and rejected.
+
+- status:: accepted
+- motivated_by:: [[decisions#Proofs where practical]] {weight: primary}
+- motivated_by:: [[decisions#Differential testing with an oracle]]
+
+## Install by download until INSTALL accepts third-party names
+
+Users download the build for their LadybugDB, OS and CPU from Marien's extension server and run `LOAD EXTENSION` with its path; the server keeps the layout `INSTALL marien FROM '<url>'` fetches, for when LadybugDB allows it.
+
+**Context.** LadybugDB 0.22.1 binds `INSTALL` and `LOAD <name>` only for its official extensions. **Consequences.** The `distribution` requirement asks for download and load; CI loads from a local server in the layout (`scripts/test-install.sh`) and, after each deployment, fetches every entry from the live site and compares it with the tested artifact (`scripts/check-site.sh`).
+
+- status:: accepted
+- motivated_by:: [[constraints#INSTALL accepts only official extensions]] {weight: primary}
+- motivated_by:: [[decisions#Out-of-tree extension with its own repository]]

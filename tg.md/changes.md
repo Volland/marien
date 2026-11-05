@@ -35,17 +35,23 @@ Implemented: the Lean layers with their five proofs (54 Lean tests), the C++ shi
 
 M2: typed `elpi_run`, the `violation` protocol and `elpi_validate`, lazy recheck by schema hash, and distribution from Marien's extension server.
 
-Implemented: typed entry points, validation and schema evolution with six proofs (75 Lean tests, 52 integration tests on macOS arm64 and Linux aarch64), the out-of-tree build, the load-time version check and the release workflow, first published as v0.3.0 (four platforms, GitHub release and the Pages extension server). Open: `INSTALL marien FROM`, which LadybugDB 0.22.1 refuses for non-official names ([[constraints#INSTALL accepts only official extensions]]).
+Implemented: typed entry points, validation and schema evolution with six proofs (75 Lean tests, 52 integration tests on macOS arm64 and Linux aarch64), the out-of-tree build, the load-time version check and the release workflow, first published as v0.3.0 (four platforms, GitHub release and the Pages extension server). Installation is download and `LOAD EXTENSION`, since LadybugDB 0.22.1 refuses `INSTALL` for non-official names ([[decisions#Install by download until INSTALL accepts third-party names]]).
 
-- status:: proposed
+- status:: archived
+- date:: 2026-11-05
+
+Archived to `openspec/changes/archive/2026-11-05-add-typed-validation/`; its requirements live in `openspec/specs/` (`distribution`, `rule-execution`, `schema-evolution`, `validation`).
 
 ## add-analysis-and-partitioning
 
 M3: rule analysis (reachability, monotonicity, dynamic, locality), narrowed scope, anchor and key partitions, structural facts and the differential property tests.
 
-Implemented: the analyzer with stored verdicts, narrowed scopes, anchor and key partitions, structural facts, three planner theorems and `reach_closed`, and the differential properties (unit, integration and property tests). Open: the stretch soundness theorems, indexing deep enough for full-scope joins ([[constraints#Deep indexing scans the first-argument bucket]]), and scopes as query parameters, which LadybugDB refuses ([[constraints#Table function arguments are literals]]).
+Implemented: the analyzer with stored verdicts, narrowed scopes, anchor and key partitions, structural facts, three planner theorems, `reach_closed`, the soundness theorems `monotone_sound` and `locality_sound` over an abstract Horn semantics, and the differential properties (unit, integration and property tests). Left for later: indexing deep enough for full-scope joins ([[constraints#Deep indexing scans the first-argument bucket]]), and scopes as query parameters, which LadybugDB refuses ([[constraints#Table function arguments are literals]]).
 
-- status:: proposed
+- status:: archived
+- date:: 2026-11-05
+
+Archived to `openspec/changes/archive/2026-11-05-add-analysis-and-partitioning/`; its requirements live in `openspec/specs/` (`differential-testing`, `partitioning`, `rule-analysis`, `rule-execution`).
 
 ## add-higher-order-layer
 

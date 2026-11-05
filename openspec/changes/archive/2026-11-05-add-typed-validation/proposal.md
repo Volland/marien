@@ -11,7 +11,7 @@ After the tracer bullet (M1) Marien can save a module and run an untyped goal ov
 - `elpi_run(module, pred, params)`: calls a declared predicate; `i:` arguments are decoded from a parameter map through the value codec, `o:` arguments become typed output columns fixed at bind time; node kinds come back as primary-key columns.
 - Validation protocol: a module that declares `pred violation o:severity, o:string, o:subject.` takes part in `elpi_validate([modules], [min_severity])`, which returns one report `(module, version, severity, code, message, subject_label, subject_pk)`. `subject` is a generated union kind with one constructor per node and edge kind.
 - Schema evolution: every module stores a hash of the tables it reaches. A run whose hash differs regenerates and rechecks the module in memory; failure makes the run error and never falls back to stale code. `elpi_recheck()` revalidates every module, persists generated code and `status` through `rewriteFunc`, and returns a report.
-- Distribution: out-of-tree build (Lake static archive plus a CMake-built shim) pinned to one LadybugDB version, a CI matrix over LadybugDB version × OS × CPU, and installation with `INSTALL marien FROM '<url>'` and `LOAD marien`; loading into a mismatched LadybugDB is refused.
+- Distribution: out-of-tree build (Lake static archive plus a CMake-built shim) pinned to one LadybugDB version, a CI matrix over LadybugDB version × OS × CPU, and installation from Marien's extension server (download and `LOAD EXTENSION`, in the layout `INSTALL marien FROM '<url>'` will use once LadybugDB accepts names outside its official list); loading into a mismatched LadybugDB is refused.
 
 ## Capabilities
 

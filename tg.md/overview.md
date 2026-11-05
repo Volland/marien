@@ -24,5 +24,4 @@ A run sees exactly the facts it loaded, so negation, cut and `forall` are only s
 
 Points the design interview of 2026-10-31 left open; each needs an answer before the milestone that depends on it.
 
-- Soundness proofs of the monotonicity and locality checks: a stretch goal under [[decisions#Proofs where practical]], guarded by property tests until done.
 - Whether LadybugDB will accept upstream patches for DDL hooks and for hosting the extension.

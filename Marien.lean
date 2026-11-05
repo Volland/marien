@@ -1,6 +1,7 @@
 import Marien.Engine
 import Marien.Schema
 import Marien.Ffi
+import Marien.Analysis.Semantics
 
 /-!
 # Marien

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# @tg: implements:: [[openspec:distribution#Install from extension server]] {confidence: partial, note: "the layout INSTALL fetches; LadybugDB 0.22.1 refuses INSTALL for non-official names"}
+# @tg: implements:: [[openspec:distribution#Install from extension server]]
 # Lay out a built extension the way LadybugDB's `INSTALL marien FROM '<url>'` fetches it:
 #   <out>/v<extension version>/<os>_<arch>/marien/libmarien.lbug_extension
 # where the extension version is LadybugDB's LBUG_EXTENSION_VERSION (from the pinned source) and

@@ -26,8 +26,8 @@
 - [x] 4.1 `lake` target for the static archive; CMake project in `shim/`; `scripts/build-extension.sh`; pinned version file (`scripts/build-extension.sh`, `scripts/check-one-library.sh`)
 - [x] 4.2 Hidden visibility and an exported-symbol check in CI (`scripts/check-exports.sh` in CI)
 - [x] 4.3 Load-time version check that refuses to register functions on mismatch (exact through liblbug's `Version::getVersion`; by storage version in the CLI, which does not export it)
-- [ ] 4.4 CI matrix (LadybugDB version × macOS/Linux × arm64/x86_64), artifact naming, release blocked by any failing entry (written: `.github/workflows/release.yml` over `scripts/release-matrix.sh`, shape checked by `scripts/check-release-workflow.sh`; open until a tag runs it, the x86_64 entries have never been built)
-- [ ] 4.5 Extension server layout and an install-and-load CI job (layout: `scripts/package-extension.sh`; CI downloads from it and loads by path, `scripts/test-install.sh`. Blocked: LadybugDB 0.22.1 refuses `INSTALL marien FROM` and `LOAD marien` because only official names may be installed, see constraint "INSTALL accepts only official extensions"; needs an upstream change or a spec change)
+- [x] 4.4 CI matrix (LadybugDB version × macOS/Linux × arm64/x86_64), artifact naming, release blocked by any failing entry (`.github/workflows/release.yml` over `scripts/release-matrix.sh`, shape checked by `scripts/check-release-workflow.sh`; all four entries built and published by tag v0.3.0)
+- [x] 4.5 Extension server layout and an install-and-load CI job (layout: `scripts/package-extension.sh`; CI downloads from a local server in the layout and loads by path, `scripts/test-install.sh`; after publishing, `scripts/check-site.sh` fetches every entry from the live site. The requirement was changed to download and `LOAD EXTENSION` because LadybugDB 0.22.1 refuses `INSTALL` for names outside its official list)
 
 ## 5. Traceability annotations
 
@@ -41,7 +41,7 @@
 - [x] 5.8 `@tg: implements:: [[openspec:schema-evolution#Explicit recheck]]`; `@tg: verifies::` for "Recheck persists regenerated modules", "Recheck is atomic"
 - [x] 5.9 `@tg: implements:: [[openspec:distribution#Out-of-tree build]]` on the build script and CMake project; `@tg: verifies::` for "One file is produced", "Only entry points are exported"
 - [x] 5.10 `@tg: implements:: [[openspec:distribution#Build matrix]]` on the CI workflow; `@tg: verifies::` for "Artifact names carry the matrix entry", "One failing entry blocks the release"
-- [ ] 5.11 `@tg: implements:: [[openspec:distribution#Install from extension server]]`; `@tg: verifies::` for "Install and load" (implements is partial on `scripts/package-extension.sh`; the scenario stays unverified, see 4.5)
+- [x] 5.11 `@tg: implements:: [[openspec:distribution#Install from extension server]]`; `@tg: verifies::` for "Download and load" and "Every entry is served"
 - [x] 5.12 `@tg: implements:: [[openspec:distribution#LadybugDB version check]]`; `@tg: verifies::` for "Mismatched database is refused"
 
 ## 6. Knowledge graph
@@ -49,4 +49,4 @@
 - [x] 6.1 Record any new decisions and constraints from design.md in `tg.md/decisions.md` and `tg.md/constraints.md` with `motivated_by::` and `constrains:: [[openspec:<capability>#<Requirement>]] {strength: must}` edges
 - [x] 6.2 Update the component sections for Validator, Executor, Value codec, Signature generator, Module store, Handle cache and Extension shim; add `validation`, `schema-evolution`, `distribution` and `rule-execution` to the `openspec:` frontmatter of `tg.md/architecture/components.md`
 - [x] 6.3 Register the change in `tg.md/changes.md` as `add-typed-validation`
-- [ ] 6.4 Run `tg check`, `tg ontology check`, and `tg trace validation --gaps`, `tg trace schema-evolution --gaps`, `tg trace distribution --gaps`, `tg trace rule-execution --gaps`; close every gap
+- [x] 6.4 Run `tg check`, `tg ontology check`, and `tg trace validation --gaps`, `tg trace schema-evolution --gaps`, `tg trace distribution --gaps`, `tg trace rule-execution --gaps`; close every gap (only gap left in these capabilities: the Soufflé oracle, M5)
