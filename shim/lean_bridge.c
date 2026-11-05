@@ -21,6 +21,7 @@ extern lean_object *marien_signature(lean_object *, lean_object *);
 extern lean_object *marien_init_statements(lean_object *);
 extern lean_object *marien_save(lean_object *, lean_object *, lean_object *, lean_object *);
 extern lean_object *marien_drop(lean_object *, lean_object *);
+extern lean_object *marien_annotate(lean_object *, lean_object *, lean_object *, lean_object *);
 extern lean_object *marien_export(lean_object *);
 extern lean_object *marien_import(lean_object *, lean_object *, lean_object *);
 extern lean_object *marien_v_int(lean_object *);
@@ -190,6 +191,12 @@ marien_strings marien_bridge_save(const char *catalog, const char *modules, cons
     ensure_thread();
     return take_strings(marien_save(mk_str(catalog), mk_str(modules), mk_str(name),
                                     mk_str_n(source, source_len)));
+}
+
+marien_strings marien_bridge_annotate(const char *catalog, const char *table, const char *key,
+                                      const char *value) {
+    ensure_thread();
+    return take_strings(marien_annotate(mk_str(catalog), mk_str(table), mk_str(key), mk_str(value)));
 }
 
 marien_strings marien_bridge_drop(const char *modules, const char *name) {

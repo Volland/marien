@@ -118,7 +118,9 @@ std::string catalogJson(main::ClientContext& ctx) {
         out += "{\"name\": " + jsonString(r->getName()) + ", \"pairs\": " + pairs +
                "], \"properties\": " + propsJson(*r) + "}";
     }
-    return out + "]}";
+    auto limit = [&](const char* name) { return std::to_string(ctx.getCurrentSetting(name).getValue<int64_t>()); };
+    return out + "], \"annotations\": " + annotationsJson(ctx) + ", \"limits\": {\"fuel\": " + limit("elpi_fuel") +
+           ", \"max_generated_bytes\": " + limit("elpi_max_generated_bytes") + "}}";
 }
 
 // @tg: implements:: [[openspec:rule-storage#Module system tables]]

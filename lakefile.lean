@@ -17,7 +17,7 @@ require «lean-elpi» from git "https://github.com/Volland/lean-elpi" @ "91ea5ba
 /-- The test suites the test driver runs. -/
 lean_lib Tests where
   srcDir := "tests"
-  roots := #[`EngineContract, `M1, `M2, `M3, `Property.Gen, `Property.Model, `Property.Tests]
+  roots := #[`EngineContract, `M1, `M2, `M3, `M4, `GraphStd.Reference, `GraphStd.Tests, `Property.Gen, `Property.Model, `Property.Tests]
 
 /-- `lake test`: the engine contract (one check per `engine-host-api` scenario, against the pinned
 LeanElpi) and the M1 unit tests of the Lean layers. -/

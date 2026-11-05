@@ -1,5 +1,5 @@
 # platform  gzip-9 bytes of the stripped extension (update when growth is intended)
-# osx-arm64: build/libmarien.lbug_extension of analysis and partitioning (M3); M2 was 1163287, M1 1095112, the spike 871701
-osx-arm64 1264899
+# osx-arm64: build/libmarien.lbug_extension of the higher-order layer (M4); M3 was 1264899, M2 1163287, M1 1095112, the spike 871701
+osx-arm64 1303746
 # linux-aarch64: the extension built in Ubuntu 24.04 with the PIC Lean runtime (tests/linux/run.sh), M3; M2 was 1530783, M1 1461879
 linux-aarch64 1633252

@@ -57,6 +57,8 @@ Archived to `openspec/changes/archive/2026-11-05-add-analysis-and-partitioning/`
 
 M4: schema reflection and annotations, staged rule generation, dynamic entry points and the `graph.std` combinator library.
 
+Implemented: schema reflection with annotations (`elpi_annotate`, `_elpi_annotation`), stage 1 meta-rules whose text is checked and analysed like source and stored in `_elpi_module.generated`, `graph.std` built into the extension, and locality that follows relation arguments into combinators; four proofs (`ofSchema_no_system`, `ofSchema_perm`, `generate_perm`, `heads_declared`), unit, property and integration tests. Open: the optional proof `Reference.closure_spec`.
+
 - status:: proposed
 
 ## add-ecosystem

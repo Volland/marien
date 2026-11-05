@@ -14,9 +14,14 @@ atom (`person P`, `person.name P N`, `in_cycle.r P`) on a node at most `radius` 
 anchor, an edge atom with an endpoint fewer than `radius` edges away, an edge property atom on
 such an edge. Distances follow edge atoms in both directions; each edge atom records the direction from its
 nearer endpoint, and the scanner loads the neighbourhood those directions reach.
-Helper predicates are inlined (head arguments unify with call arguments); a recursive helper,
-a call through a variable predicate, a library call with database predicates as arguments, a cut
-or an implication that reaches database facts is not analysed and rejects the partition.
+Helper predicates are inlined (head arguments unify with call arguments). A head variable bound
+to a predicate term (`edge_of has_manager` passed for `R`) stands for that term in the inlined
+body, so a call `R X Y` is a call of `edge_of has_manager X Y`: this is how the higher-order
+combinators of `graph.std` are analysed by their definitions. The template of a `findall` is
+checked as a goal whose bindings stay inside. A recursive helper, a call through a variable
+predicate bound to no predicate term, any other library call with database predicates as
+arguments, a cut or an implication that reaches database facts is not analysed and rejects the
+partition; the error names the chain of calls that led to it.
 
 Negation is checked with the bindings it actually sees: inside `not G` only variables bound by
 goals before it count as linked, and bindings made inside `G` never leave it.
@@ -131,52 +136,95 @@ def headArgs (cl : Clause) : List Term :=
   | .app _ as => as
   | _ => []
 
-/-- Inline a goal of a clause of `owner`, whose variables are renamed with `k`. -/
-partial def expand (c : Ctx) (g : Graph) (stack : List String) (owner : Clause) (k : String) :
-    Goal → StateM Nat LG
+/-- A term with a head variable bound in `sub` replaced by its predicate term. -/
+def resolve (sub : List (String × Term)) : Term → Term
+  | t@(.var v) => ((sub.find? (·.1 == v)).map (·.2)).getD t
+  | t@(.app (.var v) as) => match ((sub.find? (·.1 == v)).map (·.2) : Option Term) with
+    | some (.const p) => .app (.const p) as
+    | some (.app h bs) => .app h (bs ++ as)
+    | _ => t
+  | t => t
+
+/-- The predicate and arguments of a term used as a goal. -/
+def callOf? : Term → Option (String × List Term)
+  | .const p => some (p, [])
+  | .app (.const p) as => some (p, as)
+  | _ => none
+
+/-- Whether a term names a predicate the analysis can inline or load: a generated database
+predicate or one with clauses, possibly partially applied. -/
+def isPredTerm (c : Ctx) (t : Term) : Bool :=
+  match callOf? t with
+  | some (p, _) => c.isGenerated p || c.hasClauses p
+  | none => false
+
+/-- The calls that led to `p`, for messages. -/
+def chain (stack : List String) (p : String) : String := " → ".intercalate (stack.reverse ++ [p])
+
+mutual
+/-- Inline a goal of a clause of `owner`, whose variables are renamed with `k`; `sub` maps the
+renamed head variables bound to predicate terms. -/
+partial def expand (c : Ctx) (g : Graph) (stack : List String) (owner : Clause) (k : String)
+    (sub : List (String × Term)) : Goal → StateM Nat LG
   | .true | .fail => return .skip
   | .cut => return match (reachFrom c g [owner.pred]).generated.head? with
     | some p => .opaque s!"a cut in {owner.pred}, which reaches {p}" (clausePos owner)
     | none => .skip
-  | .conj gs => return .conj (← gs.mapM (expand c g stack owner k))
-  | .disj a b => return .disj [← expand c g stack owner k a, ← expand c g stack owner k b]
-  | .not x | .pi _ x | .sigma _ x => return .scoped (← expand c g stack owner k x)
+  | .conj gs => return .conj (← gs.mapM (expand c g stack owner k sub))
+  | .disj a b => return .disj [← expand c g stack owner k sub a, ← expand c g stack owner k sub b]
+  | .not x | .pi _ x | .sigma _ x => return .scoped (← expand c g stack owner k sub x)
   | .impl hs b => do
     let hypDb := hs.findSome? fun h =>
       (h.pred?.filter c.isGenerated).orElse fun _ => goalReachesDb c g [] h.body
     match hypDb with
     | some p => return .opaque s!"an implication whose clauses reach {p}" (clausePos owner)
-    | none => expand c g stack owner k b
-  | .call p args => do
-    let args ← args.mapM (renameTerm k)
-    if c.isGenerated p then return .atom p args (clausePos owner)
-    if p == "=" then
-      return match args with
-        | [a, b] => .eq a b
-        | _ => .skip
-    if c.hasClauses p then
-      let some d := (reachFrom c g [p]).generated.head? | return .skip
-      if stack.contains p then
-        return .opaque s!"the recursive predicate {p} reaches {d}, so its distance from the anchor has no bound" (clausePos owner)
-      let alts ← (c.clausesOf p).mapM fun cl => do
-        let k' := s!"c{← fresh}"
-        let hs ← (headArgs cl).mapM (renameTerm k')
-        let body ← expand c g (p :: stack) cl k' cl.body
-        return LG.conj ((hs.zip args).map (fun (h, a) => LG.eq h a) ++ [body])
-      return match alts with
-        | [a] => a
-        | as => .disj as
-    match argsReachDb c g args with
-    | some d => return .opaque s!"{p} is called with arguments that reach {d}" (clausePos owner)
-    | none => return .skip
+    | none => expand c g stack owner k sub b
+  | .call p args => do expandCall c g stack owner sub p (← args.mapM (renameTerm k))
   | .builtin p args =>
     return match argsReachDb c g args with
       | some d => .opaque s!"{p} is called with arguments that reach {d}" (clausePos owner)
       | none => .skip
-  | .other t =>
-    return match goalReachesDb c g (headVarTypes c owner) (.other t) with
-      | some d => .opaque s!"a call through a variable predicate may reach {d}" (clausePos owner)
-      | none => .skip
+  | .other t => do
+    match callOf? (resolve sub (← renameTerm k t)) with
+    | some (p, args) => expandCall c g stack owner sub p args
+    | none =>
+      return match goalReachesDb c g (headVarTypes c owner) (.other t) with
+        | some d => .opaque s!"a call through a variable predicate may reach {d}" (clausePos owner)
+        | none => .skip
+
+/-- Inline a call of `p` with arguments already renamed. -/
+partial def expandCall (c : Ctx) (g : Graph) (stack : List String) (owner : Clause)
+    (sub : List (String × Term)) (p : String) (args : List Term) : StateM Nat LG := do
+  let args := args.map (resolve sub)
+  -- an atom inside an inlined helper says which calls led to it
+  let pos := if stack.length > 1 then s!"{clausePos owner} ({" → ".intercalate stack.reverse})" else clausePos owner
+  if c.isGenerated p then return .atom p args pos
+  if p == "=" then
+    return match args with
+      | [a, b] => .eq a b
+      | _ => .skip
+  if isQuantifier p == some "findall" then
+    if let some (q, as) := args.head?.bind callOf? then
+      return .scoped (← expandCall c g stack owner sub q as)
+  if c.hasClauses p then
+    let some d := (reachFrom c g [p]).generated.head? | return .skip
+    if stack.contains p then
+      return .opaque s!"the recursive predicate {p} ({chain stack p}) reaches {d}, so its distance from the anchor has no bound" (clausePos owner)
+    let alts ← (c.clausesOf p).mapM fun cl => do
+      let k' := s!"c{← fresh}"
+      let hs ← (headArgs cl).mapM (renameTerm k')
+      let sub' := sub ++ (hs.zip args).filterMap fun (h, a) => match h with
+        | .var v => if isPredTerm c a then some (v, a) else none
+        | _ => none
+      let body ← expand c g (p :: stack) cl k' sub' cl.body
+      return LG.conj ((hs.zip args).map (fun (h, a) => LG.eq h a) ++ [body])
+    return match alts with
+      | [a] => a
+      | as => .disj as
+  match argsReachDb c g args with
+  | some d => return .opaque s!"{p} ({chain stack p}) is called with arguments that reach {d}" (clausePos owner)
+  | none => return .skip
+end
 
 /-! ### Distances from the anchor -/
 
@@ -291,6 +339,20 @@ partial def boundBy (bound : List String) : LG → List String
   | .disj (b :: bs) => bs.foldl (fun acc b' => acc.filter (boundBy bound b').contains) (boundBy bound b)
   | _ => []
 
+/-- The goals of a conjunction with inlined conjunctions spliced in: `(A, (B, C))` is `A, B, C`. -/
+partial def flatConj (gs : List LG) : List LG :=
+  gs.flatMap fun | .conj hs => flatConj hs | g => [g]
+
+/-- `bound` closed under equations already unified: once one side of `a = b` is bound, so is
+the other, whichever was bound first. -/
+def closeEqs (eqs : List (Term × Term)) (bound : List String) : List String :=
+  let step (b : List String) : List String := eqs.foldl (init := b) fun b (x, y) =>
+    let vx := termVars x
+    let vy := termVars y
+    if vx.all b.contains then b ++ vy.filter (!b.contains ·)
+    else if vy.all b.contains then b ++ vx.filter (!b.contains ·) else b
+  (List.range (eqs.length + 1)).foldl (fun b _ => step b) bound
+
 /-- Why an anchor partition is rejected. -/
 structure Rejection where
   msg : String
@@ -332,20 +394,23 @@ partial def guard (shape : String → Option Shape) (radius : Nat) (bound : List
     for b in bs do out := out ++ (← guard shape radius bound (propagateFix shape radius r b) b)
     return out
   | .conj gs => do
+    let gs := flatConj gs
     let final := propagateFix shape radius env (.conj gs)
     let mut bnd := bound
+    let mut eqs : List (Term × Term) := []
     let mut out := []
     for x in gs do
       match x with
       | .atom .. | .eq .. => out := out ++ (← guard shape radius bnd final x)
       | _ => out := out ++ (← guard shape radius bnd (final.restrict bnd) x)
-      bnd := bnd ++ boundBy bnd x
+      if let .eq a b := x then eqs := eqs ++ [(a, b)]
+      bnd := closeEqs eqs (bnd ++ boundBy bnd x)
     return out
 
 /-- An entry clause, renamed and with helpers inlined. -/
 def expandClause (c : Ctx) (g : Graph) (cl : Clause) (k : String) : StateM Nat (List Term × LG) := do
   let hs ← (headArgs cl).mapM (renameTerm k)
-  let body ← expand c g [cl.pred] cl k cl.body
+  let body ← expand c g [cl.pred] cl k [] cl.body
   return (hs, body)
 
 /-- The anchor partition of `entry` by node table `table` (kind `kindId`) within `radius`: the

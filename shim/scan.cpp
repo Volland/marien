@@ -442,7 +442,7 @@ std::string storedModulesJson(main::ClientContext& ctx) {
     std::string out = "[";
     bool first = true;
     // a table made by the tracer bullet has no error column until elpi_init runs again
-    std::vector<std::string> cols{"name", "version", "source", "derived", "schema_hash", "status"};
+    std::vector<std::string> cols{"name", "version", "source", "derived", "schema_hash", "status", "generated"};
     bool hasError = e->containsProperty("error");
     if (hasError) cols.push_back("error");
     scanNodes(ctx, *e, cols, [] {},
@@ -455,7 +455,28 @@ std::string storedModulesJson(main::ClientContext& ctx) {
                 out += "{\"name\": " + jsonString(str(0)) + ", \"version\": " + std::to_string(version) +
                        ", \"source\": " + jsonString(str(2)) + ", \"derived\": " + jsonString(str(3)) +
                        ", \"schema_hash\": " + jsonString(str(4)) + ", \"status\": " + jsonString(str(5)) +
-                       ", \"error\": " + jsonString(hasError ? str(6) : std::string()) + "}";
+                       ", \"generated\": " + jsonString(str(6)) +
+                       ", \"error\": " + jsonString(hasError ? str(7) : std::string()) + "}";
+            }
+        });
+    return out + "]";
+}
+
+// @tg: implements:: [[openspec:schema-reflection#Schema annotations]] {confidence: partial, note: "read for the reflection and the hash"}
+std::string annotationsJson(main::ClientContext& ctx) {
+    auto tx = transaction::Transaction::Get(ctx);
+    if (!catalog::Catalog::Get(ctx)->containsTable(tx, "_elpi_annotation")) return "[]";
+    auto* e = nodeEntry(ctx, "_elpi_annotation");
+    std::string out = "[";
+    bool first = true;
+    scanNodes(ctx, *e, {"table_name", "key", "value"}, [] {},
+        [&](const std::vector<offset_t>&, const std::vector<std::vector<Value>>& cols) {
+            for (size_t i = 0; i < cols[0].size(); i++) {
+                auto str = [&](size_t c) { return cols[c][i].isNull() ? std::string() : cols[c][i].getValue<std::string>(); };
+                if (!first) out += ", ";
+                first = false;
+                out += "{\"table\": " + jsonString(str(0)) + ", \"key\": " + jsonString(str(1)) +
+                       ", \"value\": " + jsonString(str(2)) + "}";
             }
         });
     return out + "]";

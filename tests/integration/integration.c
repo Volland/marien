@@ -345,7 +345,8 @@ static int init_idempotent(void) {
     ORG(d);
     OK(&d, "CALL elpi_init()");
     const char *r = OK(&d, "CALL show_tables() WHERE name STARTS WITH '_elpi' RETURN name");
-    CHECK(count_lines(r) == 2, "two system tables: %s", r);
+    /* _elpi_module, _elpi_accumulates and (from M4) _elpi_annotation, each once */
+    CHECK(count_lines(r) == 3, "three system tables: %s", r);
     close_db(&d);
     return 1;
 }
@@ -1236,6 +1237,226 @@ static int narrowing_subset(void) {
     return 1;
 }
 
+/* --- higher-order layer (M4) ------------------------------------------------------------- */
+
+/* Persons 1..6, parts 1..4; ReportsTo 1→2→1; PartOf 1→2→3→1 and 4→1; HasManager 1→2, 2→3, 3→4,
+ * 3→5. `reverse` creates the tables in the opposite order. */
+static int parts_at(Db *d, const char *name, int reverse, int fresh) {
+    if (fresh ? !open_db(d, name) : 0) return 0;
+    char load[1200];
+    snprintf(load, sizeof load, "LOAD EXTENSION '%s'", ext_path);
+    const char *tables[] = {
+        "CREATE NODE TABLE Person(id INT64 PRIMARY KEY, name STRING)",
+        "CREATE NODE TABLE Part(id INT64 PRIMARY KEY)",
+        "CREATE REL TABLE ReportsTo(FROM Person TO Person)",
+        "CREATE REL TABLE PartOf(FROM Part TO Part)",
+        "CREATE REL TABLE HasManager(FROM Person TO Person)",
+    };
+    const char *data[] = {
+        "UNWIND range(1, 6) AS i CREATE (:Person {id: i, name: 'p'})",
+        "UNWIND range(1, 4) AS i CREATE (:Part {id: i})",
+        "UNWIND [[1, 2], [2, 1]] AS e MATCH (a:Person {id: e[1]}), (b:Person {id: e[2]}) CREATE (a)-[:ReportsTo]->(b)",
+        "UNWIND [[1, 2], [2, 3], [3, 1], [4, 1]] AS e MATCH (a:Part {id: e[1]}), (b:Part {id: e[2]}) CREATE (a)-[:PartOf]->(b)",
+        "UNWIND [[1, 2], [2, 3], [3, 4], [3, 5]] AS e MATCH (a:Person {id: e[1]}), (b:Person {id: e[2]}) "
+        "CREATE (a)-[:HasManager]->(b)",
+        "CALL elpi_init()",
+    };
+    if (!ok(d, "%s", load)) return 0;
+    /* node tables first, since rel tables name them; each group in the order asked */
+    const int order[2][5] = {{0, 1, 2, 3, 4}, {1, 0, 4, 3, 2}};
+    for (size_t i = 0; i < sizeof tables / sizeof *tables; i++)
+        if (!ok(d, "%s", tables[order[reverse ? 1 : 0][i]])) return 0;
+    for (size_t i = 0; i < sizeof data / sizeof *data; i++)
+        if (!ok(d, "%s", data[i])) return 0;
+    return 1;
+}
+#define PARTS(d, rev) Db d; CHECK(parts_at(&d, __func__, rev, 1), "setup failed: %s", last_error)
+
+/* One `cycle` violation per rel table annotated acyclic. */
+static const char *cycles_src =
+    "accumulate graph.std.\n"
+    "pred violation o:severity, o:string, o:subject.\n"
+    "% @marien meta\n"
+    "pred generate o:string.\n"
+    "generate S :- schema.annot T \"acyclic\" \"true\", schema.ident T R, schema.rel T K _, schema.ident K N,\n"
+    "  S is \"violation error \\\"cycle\\\" (subj_\" ^ N ^ \" X) :- acyclic_witness (edge_of \" ^ R ^ \") X.\".\n"
+    "% @marien end\n";
+
+static int save_src(Db *d, const char *name, const char *src) {
+    char esc[16384];
+    cypher_escape(src, esc, sizeof esc);
+    return ok(d, "CALL elpi_save('%s', '%s')", name, esc) != NULL;
+}
+
+static int generated_of(Db *d, const char *name, char *out, size_t n) {
+    const char *r = ok(d, "MATCH (m:_elpi_module {name: '%s'}) RETURN m.generated", name);
+    if (!r) return 0;
+    snprintf(out, n, "%s", r);
+    return 1;
+}
+
+#define CYCLES_Q "CALL elpi_validate(['cycles']) RETURN subject_label, subject_pk ORDER BY subject_label, subject_pk"
+
+/* @tg: verifies:: [[openspec:schema-reflection#Schema annotations#Annotating an unknown table fails]] {level: integration} */
+static int annotate_unknown(void) {
+    PARTS(d, 0);
+    const char *e = fails(&d, "CALL elpi_annotate('NoSuchTable', 'acyclic', 'true')");
+    CHECK(e && strstr(e, "NoSuchTable"), "error names the table: %s", e ? e : "(succeeded)");
+    const char *r = OK(&d, "MATCH (a:_elpi_annotation) RETURN count(*)");
+    CHECK(strcmp(r, "0\n") == 0, "no row written: %s", r);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:schema-reflection#Schema annotations#Annotation change triggers regeneration]] {level: integration} */
+static int annotation_regenerates(void) {
+    PARTS(d, 0);
+    OK(&d, "CALL elpi_annotate('ReportsTo', 'acyclic', 'true')");
+    CHECK(save_src(&d, "cycles", cycles_src), "save: %s", last_error);
+    const char *r = OK(&d, CYCLES_Q);
+    CHECK(strcmp(r, "Person|1\nPerson|2\n") == 0, "the ReportsTo cycle: %s", r);
+    OK(&d, "CALL elpi_annotate('PartOf', 'acyclic', 'true')");
+    r = OK(&d, CYCLES_Q);
+    CHECK(strcmp(r, "Part|1\nPart|2\nPart|3\nPerson|1\nPerson|2\n") == 0, "regenerated before the run: %s", r);
+    char gen[4096];
+    CHECK(generated_of(&d, "cycles", gen, sizeof gen), "%s", last_error);
+    CHECK(!strstr(gen, "part_of"), "a run does not write the regenerated text: %s", gen);
+    OK(&d, "CALL elpi_recheck()");
+    CHECK(generated_of(&d, "cycles", gen, sizeof gen), "%s", last_error);
+    CHECK(strstr(gen, "edge_of part_of"), "elpi_recheck persists it: %s", gen);
+    OK(&d, "CALL elpi_annotate('PartOf', 'acyclic', '')");
+    r = OK(&d, CYCLES_Q);
+    CHECK(strcmp(r, "Person|1\nPerson|2\n") == 0, "an empty value removes the annotation: %s", r);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:rule-generation#Inspectable generated code#Generated code is queryable]] {level: integration} */
+static int generated_queryable(void) {
+    PARTS(d, 0);
+    OK(&d, "CALL elpi_annotate('ReportsTo', 'acyclic', 'true')");
+    CHECK(save_src(&d, "cycles", cycles_src), "save: %s", last_error);
+    char gen[4096];
+    CHECK(generated_of(&d, "cycles", gen, sizeof gen), "%s", last_error);
+    CHECK(strstr(gen, "violation error \"cycle\" (subj_person X) :- acyclic_witness (edge_of reports_to) X."),
+          "the generated clause: %s", gen);
+    close_db(&d);
+    return 1;
+}
+
+static int reopen(Db *d, const char *name) {
+    char path[1024];
+    snprintf(path, sizeof path, "%s/%s", scratch, name);
+    lbug_system_config cfg = lbug_default_system_config();
+    cfg.buffer_pool_size = 256ull << 20;
+    cfg.max_db_size = 1ull << 33;
+    if (lbug_database_init(path, cfg, &d->db) != LbugSuccess) return 0;
+    if (lbug_connection_init(&d->db, &d->conn) != LbugSuccess) return 0;
+    return ok(d, "LOAD EXTENSION '%s'", ext_path) != NULL;
+}
+
+/* @tg: verifies:: [[openspec:rule-generation#Generated code depends only on schema and source#Regeneration is byte-identical]] {level: integration} */
+static int regeneration_identical(void) {
+    PARTS(d, 0);
+    OK(&d, "CALL elpi_annotate('ReportsTo', 'acyclic', 'true')");
+    OK(&d, "CALL elpi_annotate('PartOf', 'acyclic', 'true')");
+    CHECK(save_src(&d, "cycles", cycles_src), "save: %s", last_error);
+    char first[4096], second[4096];
+    CHECK(generated_of(&d, "cycles", first, sizeof first), "%s", last_error);
+    close_db(&d);
+    CHECK(reopen(&d, __func__), "reopen: %s", last_error);
+    const char *r = OK(&d, "CALL elpi_recheck()");
+    CHECK(strstr(r, "cycles|ok|ok|"), "no schema change: %s", r);
+    CHECK(generated_of(&d, "cycles", second, sizeof second), "%s", last_error);
+    CHECK(strcmp(first, second) == 0, "byte-identical:\n%s\nvs\n%s", first, second);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:rule-generation#Generated code depends only on schema and source#Catalog order does not matter]] {level: integration} */
+static int generated_catalog_order(void) {
+    char gen[2][4096];
+    for (int rev = 0; rev < 2; rev++) {
+        Db d;
+        char name[64];
+        snprintf(name, sizeof name, "%s_%d", __func__, rev);
+        CHECK(parts_at(&d, name, rev, 1), "setup failed: %s", last_error);
+        OK(&d, rev ? "CALL elpi_annotate('PartOf', 'acyclic', 'true')" : "CALL elpi_annotate('ReportsTo', 'acyclic', 'true')");
+        OK(&d, rev ? "CALL elpi_annotate('ReportsTo', 'acyclic', 'true')" : "CALL elpi_annotate('PartOf', 'acyclic', 'true')");
+        CHECK(save_src(&d, "cycles", cycles_src), "save: %s", last_error);
+        CHECK(generated_of(&d, "cycles", gen[rev], sizeof gen[rev]), "%s", last_error);
+        close_db(&d);
+    }
+    CHECK(strcmp(gen[0], gen[1]) == 0, "the same text:\n%s\nvs\n%s", gen[0], gen[1]);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:rule-generation#Inspectable generated code#Export omits derived code]] {level: integration} */
+static int export_omits_generated(void) {
+    PARTS(d, 0);
+    OK(&d, "CALL elpi_annotate('ReportsTo', 'acyclic', 'true')");
+    CHECK(save_src(&d, "cycles", cycles_src), "save: %s", last_error);
+    char gen[4096], again[4096];
+    CHECK(generated_of(&d, "cycles", gen, sizeof gen), "%s", last_error);
+    const char *r = OK(&d, "CALL elpi_export() RETURN *");
+    CHECK(!strstr(r, "edge_of reports_to"), "the export has no generated text: %s", r);
+    char bundle[8192] = "[{\"name\": \"cycles\", \"source\": ", esc[16384];
+    json_append(bundle, sizeof bundle, cycles_src);
+    strcat(bundle, "}]");
+    cypher_escape(bundle, esc, sizeof esc);
+    close_db(&d);
+    Db e;
+    char name[64];
+    snprintf(name, sizeof name, "%s_b", __func__);
+    CHECK(parts_at(&e, name, 0, 1), "setup failed: %s", last_error);
+    OK(&e, "CALL elpi_annotate('ReportsTo', 'acyclic', 'true')");
+    OK(&e, "CALL elpi_import('%s')", esc);
+    CHECK(generated_of(&e, "cycles", again, sizeof again), "%s", last_error);
+    CHECK(strcmp(gen, again) == 0, "the import regenerates the same text:\n%s\nvs\n%s", gen, again);
+    close_db(&e);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:graph-std#Combinators in violation rules#Cardinality rule partitions by anchor]] {level: integration} */
+static int card_partition_equals_full(void) {
+    PARTS(d, 0);
+    const char *rule =
+        "accumulate graph.std.\n"
+        "pred violation o:severity, o:string, o:subject.\n"
+        "violation error \"no-manager\" (subj_person X) :- card_witness person (edge_of has_manager) 1 1 X _.\n";
+    char partitioned[2048];
+    snprintf(partitioned, sizeof partitioned, "%s%% @marien partition violation by person radius 1\n", rule);
+    CHECK(save_src(&d, "full", rule), "save full: %s", last_error);
+    CHECK(save_src(&d, "part", partitioned), "save part: %s", last_error);
+    OK(&d, "CALL elpi_partition_batch=2");
+    char full[4096];
+    snprintf(full, sizeof full, "%s", OK(&d, REPORT_Q, "full"));
+    const char *r = OK(&d, REPORT_Q, "part");
+    CHECK(strcmp(full, r) == 0, "partitioned equals full:\n%s\nvs\n%s", full, r);
+    CHECK(strcmp(full, "error|no-manager|3\nerror|no-manager|4\nerror|no-manager|5\nerror|no-manager|6\n") == 0,
+          "persons without exactly one manager: %s", full);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:graph-std#Cycle detection#Precomputed facts agree with search]] {level: integration} */
+static int precomputed_cycles_agree(void) {
+    PARTS(d, 0);
+    CHECK(save_src(&d, "search", "accumulate graph.std.\npred violation o:severity, o:string, o:subject.\n"
+                                  "violation error \"c\" (subj_part X) :- acyclic_witness (edge_of part_of) X.\n"),
+          "save search: %s", last_error);
+    CHECK(save_src(&d, "facts", "accumulate graph.std.\npred violation o:severity, o:string, o:subject.\n"
+                                 "violation error \"c\" (subj_part X) :- acyclic_witness_in in_cycle.part_of X.\n"),
+          "save facts: %s", last_error);
+    char search[1024];
+    snprintf(search, sizeof search, "%s", OK(&d, REPORT_Q, "search"));
+    const char *r = OK(&d, REPORT_Q, "facts");
+    CHECK(strcmp(search, r) == 0, "the same witnesses:\n%s\nvs\n%s", search, r);
+    CHECK(strcmp(search, "error|c|1\nerror|c|2\nerror|c|3\n") == 0, "parts 1, 2 and 3: %s", search);
+    close_db(&d);
+    return 1;
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr, "usage: integration <extension> <scratch-dir> [filter]\n");
@@ -1274,6 +1495,11 @@ int main(int argc, char **argv) {
         {"duplicate emails", duplicate_emails}, {"cycles from SCC", cycles_from_scc},
         {"structural never stale", structural_never_stale}, {"monotone scope", monotone_scope},
         {"non-monotone scope", non_monotone_scope}, {"narrowing subset", narrowing_subset},
+        {"annotate unknown table", annotate_unknown}, {"annotation regenerates", annotation_regenerates},
+        {"generated queryable", generated_queryable}, {"regeneration identical", regeneration_identical},
+        {"generated catalog order", generated_catalog_order}, {"export omits generated", export_omits_generated},
+        {"card partition equals full", card_partition_equals_full},
+        {"precomputed cycles agree", precomputed_cycles_agree},
     };
     int run = 0;
     for (size_t i = 0; i < sizeof tests / sizeof *tests; i++) {

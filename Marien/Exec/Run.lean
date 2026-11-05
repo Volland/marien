@@ -172,17 +172,19 @@ partial def depHashes (stored : List Stored) (name : String) : List (String × S
   Schema.sortStrings names |>.filterMap fun n =>
     (stored.find? (·.name == n)).map fun m => (n, Schema.hex16 (Schema.fnv1a64 m.source))
 
-/-- The hash a run compares with the save: over the reached tables, or over the whole schema
-for a module saved before reached tables were recorded. -/
+/-- The hash a run compares with the save: what the save stored (`Derived.hashFor`), or the
+whole schema's for a module saved before reached tables were recorded. -/
 def runHash (d : Derived) (schema : Schema) : String :=
-  if d.reached.isEmpty then Schema.hash schema else Schema.reachedHash d.reached schema
+  if d.reached.isEmpty then Schema.hash schema else d.hashFor schema
 
 /-- Find the compiled module in the cache, or regenerate the signature and compile it against
 the current schema. A schema change since the save gives a new key, so the module is
-recompiled in memory; if that fails, the run fails with the type error. -/
+recompiled in memory, its meta-rules run again first; if that fails, the run fails with the
+error. The key needs no generated text: the text is a function of the source and the schema the
+key's hash covers. -/
 -- @tg: implements:: [[openspec:schema-evolution#Lazy recheck on run]]
-def compiledFor (cache : HandleCache) (schema : Schema) (stored : List Stored) (name : String) :
-    Except String (Stored × Derived × Compiled × HandleCache) := do
+def compiledFor (cache : HandleCache) (schema : Schema) (stored : List Stored) (name : String)
+    (lim : Meta.Stage.Limits := {}) : Except String (Stored × Derived × Compiled × HandleCache) := do
   let some m := stored.find? (·.name == name) | throw s!"no module named {name}"
   let derived ← (do Derived.ofJson? (← Lean.Json.parse m.derived)).mapError fun e =>
     s!"module {name} has no readable metadata ({e}); save it again"
@@ -193,17 +195,19 @@ def compiledFor (cache : HandleCache) (schema : Schema) (stored : List Stored) (
   match hit with
   | some c => return (m, c.derived, c, cache)
   | none =>
-    -- after a schema change the analysis runs again, so the verdicts match what is compiled
-    let derived ← if m.schemaHash.isEmpty || m.schemaHash == key.schemaHash then pure derived
-      else match check schema stored name m.source with
-        | .ok c => pure c.derived
+    let sp ← (Meta.Stage.split m.source).mapError (s!"module {name}: {·}")
+    -- after a schema change the meta-rules and the analysis run again, so the generated text and
+    -- the verdicts match what is compiled; a run never writes them
+    let unchanged := m.schemaHash.isEmpty || m.schemaHash == key.schemaHash
+    let (derived, gen) ← if unchanged then pure (derived, ({ text := if sp.hasMeta then m.generated else "" } : Meta.Stage.Generated))
+      else match check schema stored name m.source lim with
+        | .ok c => pure (c.derived, ({ text := c.generated } : Meta.Stage.Generated))
         | .error e => throw s!"module {name} (the schema changed since the module was saved): {e}"
     let sig ← (Signature.ofSchema (Engine.reservedNames.contains ·) schema).mapError (s!"signature: {·}")
-    let libs := (stored.filter (·.name != name)).map fun s => (s.name, s.source)
-    let program ← (Engine.compile [(signatureUnit, sig.text), (name, m.source)] libs).mapError fun e =>
-      let changed := if m.schemaHash.isEmpty || m.schemaHash == key.schemaHash then ""
-        else " (the schema changed since the module was saved)"
-      s!"module {name}{changed}: {errorText e}"
+    let libs ← libsOf schema sig lim stored name
+    let program ← (Engine.compile (unitsOf sig name sp gen) libs).mapError fun e =>
+      let changed := if unchanged then "" else " (the schema changed since the module was saved)"
+      s!"module {name}{changed}: {Meta.Stage.locate name gen e}"
     let c : Compiled := { program, sig, mentioned := derived.callsGenerated, derived }
     return (m, derived, c, cache.insert key c)
 
@@ -211,8 +215,8 @@ def compiledFor (cache : HandleCache) (schema : Schema) (stored : List Stored) (
 call scans the tables of generated predicates named in `goal`, so a debug query may ask about
 any of them. -/
 def prepare (cache : HandleCache) (schema : Schema) (stored : List Stored) (name : String)
-    (maxFacts : Nat) (goal : String := "") : Except String (Session × HandleCache) := do
-  let (_, _, compiled, cache) ← compiledFor cache schema stored name
+    (maxFacts : Nat) (goal : String := "") (lim : Meta.Stage.Limits := {}) : Except String (Session × HandleCache) := do
+  let (_, _, compiled, cache) ← compiledFor cache schema stored name lim
   let scans := scansFor compiled.sig (compiled.mentioned ++ goalWords goal)
   return ({ compiled, scans, program := compiled.program, maxFacts }, cache)
 
@@ -288,9 +292,9 @@ def entriesOf (stored : List Stored) (name : String) (d : Derived) : List String
 columns fixed. -/
 -- @tg: implements:: [[openspec:rule-execution#Typed entry points]]
 def prepareRun (cache : HandleCache) (schema : Schema) (stored : List Stored) (name pred : String)
-    (params : List (String × Value)) (maxFacts : Nat) (narrowed : Bool := false) :
+    (params : List (String × Value)) (maxFacts : Nat) (narrowed : Bool := false) (lim : Meta.Stage.Limits := {}) :
     Except String (Session × HandleCache) := do
-  let (_, derived, compiled, cache) ← compiledFor cache schema stored name
+  let (_, derived, compiled, cache) ← compiledFor cache schema stored name lim
   let some psig := Engine.predSig? compiled.program pred | throw s!"module {name} has no predicate {pred}"
   unless (entriesOf stored name derived).contains pred do
     throw s!"predicate {pred} has no mode declaration; declare it with pred {pred} i:…, o:… to call it with elpi_run"
@@ -306,9 +310,9 @@ def prepareRun (cache : HandleCache) (schema : Schema) (stored : List Stored) (n
 /-- `elpi_validate`, one module: a session for `violation S C X`. -/
 -- @tg: implements:: [[openspec:validation#Uniform validation report]]
 def prepareValidate (cache : HandleCache) (schema : Schema) (stored : List Stored) (name : String)
-    (maxFacts : Nat) (minSeverity : Severity) (narrowed : Bool := false) :
+    (maxFacts : Nat) (minSeverity : Severity) (narrowed : Bool := false) (lim : Meta.Stage.Limits := {}) :
     Except String (Session × HandleCache) := do
-  let (m, derived, compiled, cache) ← compiledFor cache schema stored name
+  let (m, derived, compiled, cache) ← compiledFor cache schema stored name lim
   unless derived.validates do throw s!"module {name} does not declare violation"
   if narrowed then checkScope compiled s!"elpi_validate: module {name}" "violation"
   let hasMessage := (Engine.predSig? compiled.program "violation_message").isSome

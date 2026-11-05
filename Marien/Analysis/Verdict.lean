@@ -104,6 +104,7 @@ def subjectArg? (c : Ctx) (pred : String) : Option Nat :=
 /-- Analyse every entry point; `own` are the module's annotations. Rejected partitions are errors;
 the warnings name inferred `dynamic` marks a `% @marien static` cannot clear. -/
 -- @tg: implements:: [[openspec:rule-analysis#Dynamic inference]]
+-- @tg: implements:: [[openspec:rule-generation#Dynamic entry points]]
 -- @tg: implements:: [[openspec:rule-analysis#Monotonicity check]]
 def analyze (c : Ctx) (sig : Signature) (entries : List String) (own : List Annotation) :
     Except String (List EntryVerdict × List String) := do
@@ -129,8 +130,8 @@ def analyze (c : Ctx) (sig : Signature) (entries : List String) (own : List Anno
     for a in own.filter (·.pred == e) do
       let partitionOf (what : String) : Except String Unit := do
         if let some (goal, o) := dyn then
-          throw s!"cannot partition {e} by {what}: it is dynamic because of {goal} at {o.pos}"
-        if marked then throw s!"cannot partition {e} by {what}: it is marked dynamic"
+          throw s!"cannot partition {e} by {what}: dynamic entry points run at full scope only, and {e} is dynamic because of {goal} at {o.pos}"
+        if marked then throw s!"cannot partition {e} by {what}: dynamic entry points run at full scope only, and {e} is marked dynamic"
       match a with
       | .anchor _ kind radius line =>
         partitionOf kind

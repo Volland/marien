@@ -24,14 +24,19 @@ class Value;
 namespace marien {
 
 // The catalog as the schema JSON of Marien/Schema.lean (system tables included; Lean removes
-// them).
+// them), with the rows of _elpi_annotation and stage 1's limits (elpi_fuel,
+// elpi_max_generated_bytes).
 std::string catalogJson(lbug::main::ClientContext& ctx);
+
+// The rows of _elpi_annotation as a JSON array of {table, key, value}; empty when the table does
+// not exist yet.
+std::string annotationsJson(lbug::main::ClientContext& ctx);
 
 // Throws an error telling the user to run elpi_init() when the system tables are missing.
 void requireModuleTables(lbug::main::ClientContext& ctx);
 
 // The rows of _elpi_module as a JSON array of {name, version, source, derived, schema_hash,
-// status, error}, read in the caller's transaction.
+// status, error, generated}, read in the caller's transaction.
 std::string storedModulesJson(lbug::main::ClientContext& ctx);
 
 // Which rows of node tables a call reads: a narrowed scope, a partition batch's neighbourhood

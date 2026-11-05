@@ -1,0 +1,106 @@
+% graph.std: combinators over relation predicates, for any rel table.
+%
+% Accumulate it with `accumulate graph.std.`. A rel table's predicate (`reports_to P E M`) has
+% type `A -> E -> B -> prop`; `edge_of R` projects it to `A -> B -> prop`, and every other
+% combinator takes such a projection, so one combinator applies to every rel table. Answers are
+% sets: closure, acyclic_witness and card_witness yield each answer once on every finite relation;
+% the pair witnesses repeat an answer once per parallel edge.
+%
+% Locality, checked by Marien's analysis wherever a partitioned rule uses a combinator (the
+% claims below are tested against it, never trusted):
+% @marien local card_witness radius 1
+% @marien local functional_witness radius 1
+% @marien local symmetric_witness radius 1
+% @marien local acyclic_witness_in radius 0
+% @marien nonlocal closure
+% @marien nonlocal acyclic
+% @marien nonlocal acyclic_witness
+
+% ---- relation combinators ------------------------------------------------------------------
+% @tg: implements:: [[openspec:graph-std#Relation combinators]]
+
+pred edge_of i:(A -> E -> B -> prop), o:A, o:B.
+edge_of R X Y :- R X _ Y.
+
+pred graph.std.step i:(A -> B -> prop), o:A, o:B.
+graph.std.step R X Y :- R X Y.
+
+pred graph.std.targets i:list prop, o:list B.
+graph.std.targets [] [].
+graph.std.targets [graph.std.step _ _ Y | Gs] [Y | Ys] :- graph.std.targets Gs Ys.
+
+pred graph.std.sources i:list prop, o:list A.
+graph.std.sources [] [].
+graph.std.sources [graph.std.step _ X _ | Gs] [X | Xs] :- graph.std.sources Gs Xs.
+
+% The items of a list not in V, each once.
+pred graph.std.new i:list A, i:list A, o:list A.
+graph.std.new [] _ [].
+graph.std.new [Z | Zs] V Out :- std.mem! V Z, graph.std.new Zs V Out.
+graph.std.new [Z | Zs] V [Z | Out] :- not (std.mem! V Z), graph.std.new Zs [Z | V] Out.
+
+% Breadth first from a frontier; each node is expanded once, so it ends on cyclic relations.
+pred graph.std.reach i:(A -> A -> prop), i:list A, i:list A, o:list A.
+graph.std.reach _ [] V V.
+graph.std.reach R [N | Rest] V Out :-
+  std.findall (graph.std.step R N _) Gs, graph.std.targets Gs Zs,
+  graph.std.new Zs V New, std.append New V V2, std.append Rest New Fr,
+  graph.std.reach R Fr V2 Out.
+
+% Y is reachable from X in one or more steps; X itself only when it lies on a cycle.
+pred closure i:(A -> A -> prop), i:A, o:A.
+closure R X Y :- graph.std.reach R [X] [] S, std.mem S Y.
+
+% X has two distinct targets.
+pred functional_witness i:(A -> B -> prop), o:A, o:B, o:B.
+functional_witness R X Y1 Y2 :- R X Y1, R X Y2, not (Y1 = Y2).
+
+% X reaches Y, and Y does not reach X.
+pred symmetric_witness i:(A -> A -> prop), o:A, o:A.
+symmetric_witness R X Y :- R X Y, not (R Y X).
+
+% ---- cycle detection -----------------------------------------------------------------------
+% @tg: implements:: [[openspec:graph-std#Cycle detection]]
+
+% X lies on a cycle, found by search from every source of R.
+pred acyclic_witness i:(A -> A -> prop), o:A.
+acyclic_witness R X :-
+  std.findall (graph.std.step R _ _) Gs, graph.std.sources Gs Xs, graph.std.new Xs [] Ns,
+  std.mem Ns X, graph.std.reach R [X] [] S, std.mem! S X.
+
+pred acyclic i:(A -> A -> prop).
+acyclic R :- not (acyclic_witness R _).
+
+% The same witnesses from precomputed structural facts: `acyclic_witness_in in_cycle.part_of X`.
+pred acyclic_witness_in i:(A -> prop), o:A.
+acyclic_witness_in InCycle X :- InCycle X.
+
+% ---- cardinality checks --------------------------------------------------------------------
+% @tg: implements:: [[openspec:graph-std#Cardinality checks]]
+
+% The number of distinct targets of X.
+pred graph.std.count i:(A -> B -> prop), i:A, o:int.
+graph.std.count R X N :-
+  std.findall (graph.std.step R X _) Gs, graph.std.targets Gs Ys, graph.std.new Ys [] Ds,
+  std.length Ds N.
+
+% N is below Min, or above Max when Max is not -1.
+pred graph.std.outside i:int, i:int, i:int.
+graph.std.outside N Min _ :- N i< Min.
+graph.std.outside N Min Max :- N i>= Min, Max i>= 0, N i> Max.
+
+% X has between Min and Max distinct targets (Max -1: no upper bound).
+pred card i:(A -> B -> prop), i:A, i:int, i:int.
+card R X Min Max :- graph.std.count R X N, not (graph.std.outside N Min Max).
+
+% X, a node of Nodes (the node predicate of R's source kind, such as person), has N distinct
+% targets, outside [Min, Max]; a node without edges has N = 0.
+pred card_witness i:(A -> prop), i:(A -> B -> prop), i:int, i:int, o:A, o:int.
+card_witness Nodes R Min Max X N :- Nodes X, graph.std.count R X N, graph.std.outside N Min Max.
+
+% ---- combinators in violation rules --------------------------------------------------------
+% @tg: implements:: [[openspec:graph-std#Combinators in violation rules]]
+%
+% Every combinator above is an ordinary predicate, analysed by its definition: those that use
+% negation or findall make the calling entry point non-monotone, and a partitioned rule may use
+% one only where the locality check accepts its inlined body.

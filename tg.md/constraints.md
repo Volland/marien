@@ -44,6 +44,8 @@ LeanElpi checks clauses against the declared type with its type variables rigid,
 
 - source:: lean-elpi `openspec/specs/elpi-typechecker/spec.md`, Requirement "Prenex polymorphism"
 - constrains:: [[decisions#Staged rule generation over a reflected schema]]
+- constrains:: [[components#Rule generator]] {strength: must, note: "rule-generation, Stage one meta-rules: the description is plain data"}
+- constrains:: [[decisions#Combinators take the node predicate where they enumerate nodes]] {strength: must}
 
 ## One Lean runtime per process
 
@@ -190,3 +192,10 @@ A narrowed scope therefore cannot be a query parameter, as the rule-execution sp
 
 - source:: a prepared statement with a bound STRUCT parameter against LadybugDB v0.22.1 liblbug (macOS arm64), 2026-11-01
 - constrains:: [[components#Extension shim]] {strength: must, note: "the scope of elpi_run and elpi_validate is a literal"}
+
+## Table is a reserved word
+
+LadybugDB's parser refuses `table` as a property name (`CREATE NODE TABLE … (table STRING)` is a parse error), so a system table cannot have a column called `table`.
+
+- source:: LadybugDB 0.22.1 parser, checked in the CLI
+- constrains:: [[components#Module store]] {strength: must, note: "schema-reflection, Schema annotations: the column is table_name"}

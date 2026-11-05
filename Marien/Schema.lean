@@ -18,7 +18,9 @@ Catalog JSON:
 ```
 
 A type is a type name (`"INT64"`), `{"list": T}`, `{"struct": [[field, T], ...]}` or
-`{"other": "MAP(STRING, INT64)"}` for a type Marien does not map.
+`{"other": "MAP(STRING, INT64)"}` for a type Marien does not map. The optional key
+`"annotations": [{"table": "ReportsTo", "key": "acyclic", "value": "true"}]` carries the rows of
+`_elpi_annotation`, which meta-rules read and which count in the schema hash.
 
 Tables whose names start with `_elpi_` are Marien's own storage. `Schema.visible` removes them,
 and the canonical form and hash are computed over what remains; `canonical_perm` proves that the
@@ -117,9 +119,17 @@ structure RelTable where
   props : List Property
   deriving Repr, Inhabited, BEq
 
+/-- An annotation set with `elpi_annotate`: a key and a value on a user table. -/
+structure Annot where
+  table : String
+  key : String
+  value : String
+  deriving Repr, Inhabited, BEq
+
 structure Schema where
   nodes : List NodeTable := []
   rels : List RelTable := []
+  annots : List Annot := []
   deriving Repr, Inhabited, BEq
 
 /-- Tables of Marien's own storage. -/
@@ -154,7 +164,12 @@ private def relOfJson (j : Json) : Except String RelTable := do
 def ofJson (j : Json) : Except String Schema := do
   let nodes ← (← j.getObjValAs? (Array Json) "nodes").toList.mapM nodeOfJson
   let rels ← (← j.getObjValAs? (Array Json) "rels").toList.mapM relOfJson
-  return { nodes, rels }
+  let annots ← match j.getObjVal? "annotations" with
+    | .ok (.arr xs) => xs.toList.mapM fun a => do
+        return { table := ← a.getObjValAs? String "table", key := ← a.getObjValAs? String "key"
+                 value := ← a.getObjValAs? String "value" }
+    | _ => pure []
+  return { nodes, rels, annots }
 
 def parse (text : String) : Except String Schema := do
   ofJson (← Json.parse text)
@@ -168,9 +183,15 @@ def visibleRel (r : RelTable) : Option RelTable :=
     | [] => none
     | ps => some { r with pairs := ps }
 
-/-- The schema rules may see: every `_elpi_*` table, and every pair touching one, removed. -/
+/-- The schema rules may see: every `_elpi_*` table, every pair touching one and every
+annotation on one, removed. -/
 def visible (s : Schema) : Schema :=
-  { nodes := s.nodes.filter (!isSystem ·.name), rels := s.rels.filterMap visibleRel }
+  { nodes := s.nodes.filter (!isSystem ·.name), rels := s.rels.filterMap visibleRel
+    annots := s.annots.filter (!isSystem ·.table) }
+
+theorem visible_annots {s : Schema} {a : Annot} (h : a ∈ s.visible.annots) : isSystem a.table = false := by
+  simp [visible] at h
+  exact h.2
 
 theorem visible_nodes {s : Schema} {n : NodeTable} (h : n ∈ s.visible.nodes) : isSystem n.name = false := by
   simp [visible] at h
@@ -224,18 +245,23 @@ def renderRel (r : RelTable) : String :=
     ",".intercalate (sortStrings (r.pairs.map fun (a, b) => a.quote ++ ">" ++ b.quote)) ++
     " props " ++ ",".intercalate (sortStrings (r.props.map renderProp))
 
-/-- The canonical form: one line per visible table, tables, properties and pairs sorted. -/
-def canonical (s : Schema) : List String :=
-  sortStrings (s.visible.nodes.map renderNode ++ s.visible.rels.map renderRel)
+def renderAnnot (a : Annot) : String :=
+  "annot " ++ a.table.quote ++ " " ++ a.key.quote ++ " " ++ a.value.quote
 
-/-- Listing the same tables in another order gives the same canonical form. Properties and
-pairs are sorted inside `renderNode` and `renderRel` by the same `sortStrings_perm`. -/
+/-- The canonical form: one line per visible table and per annotation, tables, properties and
+pairs sorted. A schema without annotations has the canonical form it had before annotations. -/
+def canonical (s : Schema) : List String :=
+  sortStrings (s.visible.nodes.map renderNode ++ s.visible.rels.map renderRel ++ s.visible.annots.map renderAnnot)
+
+/-- Listing the same tables and annotations in another order gives the same canonical form.
+Properties and pairs are sorted inside `renderNode` and `renderRel` by the same
+`sortStrings_perm`. -/
 -- @tg: verifies:: [[openspec:schema-encoding#Canonical schema hash#Order does not matter]] {level: unit}
-theorem canonical_perm {s t : Schema} (hn : s.nodes.Perm t.nodes) (hr : s.rels.Perm t.rels) :
-    canonical s = canonical t := by
+theorem canonical_perm {s t : Schema} (hn : s.nodes.Perm t.nodes) (hr : s.rels.Perm t.rels)
+    (ha : s.annots.Perm t.annots) : canonical s = canonical t := by
   unfold canonical visible
   apply sortStrings_perm
-  exact List.Perm.append ((hn.filter _).map _) ((hr.filterMap _).map _)
+  exact List.Perm.append (List.Perm.append ((hn.filter _).map _) ((hr.filterMap _).map _)) ((ha.filter _).map _)
 
 /-- 64-bit FNV-1a over the UTF-8 bytes: stable across Lean versions, unlike `hash`, because the
 hash is stored in `_elpi_module.schema_hash`. -/
@@ -252,12 +278,13 @@ def hash (s : Schema) : String := hex16 (fnv1a64 ("\n".intercalate s.canonical))
 
 /-! ### Reached-table hash -/
 
-/-- The tables named in `names`, and nothing else. -/
+/-- The tables named in `names` with their annotations, and nothing else. -/
 def restrict (names : List String) (s : Schema) : Schema :=
-  { nodes := s.nodes.filter (names.contains ·.name), rels := s.rels.filter (names.contains ·.name) }
+  { nodes := s.nodes.filter (names.contains ·.name), rels := s.rels.filter (names.contains ·.name)
+    annots := s.annots.filter (names.contains ·.table) }
 
-/-- The hash a module stores: the schema hash of exactly the tables it reaches. A table that
-is gone simply drops out, so dropping a reached table changes the hash. -/
+/-- The hash a module stores: the schema hash of exactly the tables it reaches, annotations
+included. A table that is gone simply drops out, so dropping a reached table changes the hash. -/
 -- @tg: implements:: [[openspec:schema-evolution#Reached-table schema hash]]
 def reachedHash (names : List String) (s : Schema) : String := hash (s.restrict names)
 
@@ -277,12 +304,13 @@ theorem reachedHash_congr {names : List String} {s t : Schema}
     (h : s.restrict names = t.restrict names) : reachedHash names s = reachedHash names t := by
   simp [reachedHash, h]
 
-/-- The order in which the catalog lists tables does not change the reached hash. -/
+/-- The order in which the catalog lists tables and annotations does not change the reached
+hash. -/
 -- @tg: verifies:: [[openspec:schema-evolution#Reached-table schema hash#Catalog order does not matter]] {level: unit}
 theorem hash_perm {names : List String} {s t : Schema} (hn : s.nodes.Perm t.nodes)
-    (hr : s.rels.Perm t.rels) : reachedHash names s = reachedHash names t := by
+    (hr : s.rels.Perm t.rels) (ha : s.annots.Perm t.annots) : reachedHash names s = reachedHash names t := by
   unfold reachedHash hash
-  rw [canonical_perm (s := s.restrict names) (t := t.restrict names) (hn.filter _) (hr.filter _)]
+  rw [canonical_perm (s := s.restrict names) (t := t.restrict names) (hn.filter _) (hr.filter _) (ha.filter _)]
 
 end Schema
 

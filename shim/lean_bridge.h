@@ -54,6 +54,9 @@ marien_strings marien_bridge_init_statements(void);
 marien_strings marien_bridge_save(const char *catalog, const char *modules, const char *name,
                                   const char *source, size_t source_len);
 marien_strings marien_bridge_drop(const char *modules, const char *name);
+/* The statement of elpi_annotate(table, key, value); an empty value removes the annotation. */
+marien_strings marien_bridge_annotate(const char *catalog, const char *table, const char *key,
+                                      const char *value);
 marien_strings marien_bridge_export(const char *modules);
 marien_strings marien_bridge_import(const char *catalog, const char *modules, const char *bundle,
                                     size_t bundle_len);

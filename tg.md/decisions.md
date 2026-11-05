@@ -104,6 +104,8 @@ Meta-rules run at save time and on schema change over a monomorphic description 
 
 **Context.** A single polymorphic `schema.rel` cannot typecheck, and clauses created during a run escape the static checks. **Consequences.** Generated code depends only on the schema hash and is stored for inspection. Entry points that add clauses for database predicates with `=>` at run time are inferred `dynamic`; dynamic entry points run at full scope only and are never partitioned. Annotations live in a `_elpi_annotation` table; `graph.std` supplies combinators such as `closure`, `acyclic` and `functional`.
 
+Built in M4 (`Marien/Meta/`): the description carries `schema.ident` and `schema.prop_ident`, the shallow predicates a meta-rule writes into clause text, and stage 2 loads the generated text as its own unit after the module's clauses.
+
 Record: [ADR 0010](../docs/adr/0010-staged-rule-generation-over-a-reflected-schema.md).
 
 - status:: accepted
@@ -542,3 +544,81 @@ Users download the build for their LadybugDB, OS and CPU from Marien's extension
 - status:: accepted
 - motivated_by:: [[constraints#INSTALL accepts only official extensions]] {weight: primary}
 - motivated_by:: [[decisions#Out-of-tree extension with its own repository]]
+
+## Meta-rules in a marked section of the module
+
+A module's meta-rules sit between `% @marien meta` and `% @marien end`; the section is cut out of the stage 2 program and the meta-rules are loaded on their own, both with every line kept in place.
+
+**Context.** Meta-rules need `pred generate` and the description's predicates, which the stage 2 program must not see; a separate module per meta-program would split one rule set in two. **Consequences.** Errors in either part point at the module's own lines; errors in generated text point at `<module> (generated)` with the solution of `generate` that produced the line.
+
+- status:: accepted
+- motivated_by:: [[decisions#Staged rule generation over a reflected schema]] {weight: primary}
+- motivated_by:: [[decisions#Rules stored in system tables]]
+
+## Stage one is bounded by fuel and size, never by a clock
+
+Stage 1 runs under `elpi_fuel` and `elpi_max_generated_bytes` (default 1 000 000), and sees neither the shallow signature nor any fact.
+
+**Context.** A time limit would make the generated text depend on the machine and the moment; a meta-rule that one clause per pair of tables can blow up past `elpi_max_facts`, which never counts text. **Consequences.** `generate` is a pure function of the description and the source (`Stage.generate_deterministic`, `Stage.generate_perm`); a meta-rule that calls a database predicate is refused by name from the compile error.
+
+- status:: accepted
+- motivated_by:: [[decisions#Staged rule generation over a reflected schema]] {weight: primary}
+- motivated_by:: [[decisions#Fuel-sliced execution that fails loudly]]
+
+## Staged modules hash the whole schema
+
+A module with meta-rules, or one that accumulates such a module, stores the hash of the whole visible schema with its annotations, not of the tables it reaches.
+
+**Context.** Stage 1 reads the whole description, so any table or annotation can change the generated text. **Consequences.** Any DDL or `elpi_annotate` regenerates a staged module on its next run (in memory) or at `elpi_recheck` (stored); modules without meta-rules keep the reached-table hash, which now also covers the annotations of reached tables.
+
+- status:: accepted
+- motivated_by:: [[decisions#Lazy recheck by schema hash]] {weight: primary}
+- motivated_by:: [[decisions#A module reaches what its accumulated modules reach]]
+
+## Generated clauses only for declared predicates
+
+Every clause in a module's generated text must be for a predicate the module's own clauses or the shallow signature declare (`Stage.checkHeads`, proved by `Stage.heads_declared`).
+
+**Context.** LeanElpi compiles a clause for an undeclared predicate without complaint. **Consequences.** Generated code cannot add entry points nobody wrote or reviewed; a meta-rule that needs a helper predicate declares it in the module.
+
+- status:: accepted
+- motivated_by:: [[decisions#Staged rule generation over a reflected schema]] {weight: primary}
+- motivated_by:: [[decisions#Proofs where practical]]
+
+## The generated column holds stage one text
+
+`_elpi_module.generated` holds the text the module's meta-rules generated, empty without meta-rules, instead of the shallow signature it was checked against.
+
+**Context.** The signature is a function of the schema and was never read back. **Consequences.** `MATCH (m:_elpi_module) RETURN m.generated` shows generated code; `elpi_recheck` persists regenerated text; `elpi_export` leaves it out and `elpi_import` regenerates it.
+
+- status:: accepted
+- motivated_by:: [[decisions#Staged rule generation over a reflected schema]] {weight: primary}
+
+## graph.std is built into the extension
+
+`lib/graph/std.elpi` is compiled into the extension with `include_str`, and `accumulate graph.std.` resolves to it in every module; no stored module may take the name.
+
+**Context.** The analysis must read the combinators' real clauses, and a stored copy could drift from the version the extension was tested with. **Consequences.** Upgrading the extension upgrades the library; its locality claims (`% @marien local …`) are tested against the analysis.
+
+- status:: accepted
+- motivated_by:: [[decisions#Predicate-per-property encoding]] {weight: primary}
+- motivated_by:: [[decisions#Partitioned validation]]
+
+## Combinators take the node predicate where they enumerate nodes
+
+`card_witness Nodes R Min Max X N` takes the node predicate of `R`'s source kind (`person`), since a library polymorphic in the kind cannot list a kind's nodes; `acyclic_witness_in` takes the structural predicate `in_cycle.<rel>`.
+
+**Context.** A clause `nodes P :- person P` fixes the type variable of a polymorphic `nodes`, which LeanElpi rejects. **Consequences.** Nodes without edges count as 0; the spec's signatures carry the extra argument.
+
+- status:: accepted
+- motivated_by:: [[constraints#Clause type variables are rigid]] {weight: primary}
+
+## Locality follows predicate arguments into combinators
+
+The locality check inlines a combinator with its relation arguments substituted, checks a `findall` template as a scoped goal, splices inlined conjunctions into their parent and closes bound variables over equations already unified.
+
+**Context.** Before M4 any call through a variable predicate rejected a partition, so no combinator could be used in a partitioned rule. **Consequences.** `card_witness`, `functional_witness` and `symmetric_witness` partition at radius 1; search-based `closure` and `acyclic_witness` are rejected with the chain of calls in the message. The differential properties (300 cases) still hold.
+
+- status:: accepted
+- motivated_by:: [[decisions#Locality by inlining, conservatively]] {weight: primary}
+- motivated_by:: [[decisions#Partitioned validation]]

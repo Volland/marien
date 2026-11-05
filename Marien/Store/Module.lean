@@ -2,6 +2,8 @@ import Marien.Engine
 import Marien.Encoding.Signature
 import Marien.Store.Literal
 import Marien.Analysis.Verdict
+import Marien.Meta.Stage
+import Marien.Meta.GraphStd
 
 /-!
 # Module store
@@ -10,10 +12,12 @@ Modules live in the system tables `_elpi_module` and `_elpi_accumulates`. Every 
 here, at bind time of the calling table function, and comes back as Cypher statements that the
 shim returns from `rewriteFunc`, so a write runs in the caller's transaction or not at all.
 
-`save` parses the module, loads it after the generated signature with its accumulated modules
-as libraries, type-checks it, extracts its derived metadata from the clause AST, runs the rule
-analyzer over it (reachability, monotonicity, `dynamic`, declared partitions) and checks its
-`accumulate` dependencies; only then does it produce the statement that stores it. Sources are
+`save` parses the module, runs its meta-rules (stage 1, `Meta.Stage`) when it has a meta section,
+loads its own clauses and the generated text after the generated signature with its accumulated
+modules and `graph.std` as libraries, type-checks them, extracts its derived metadata from the
+clause AST, runs the rule analyzer over it (reachability, monotonicity, `dynamic`, declared
+partitions) and checks its `accumulate` dependencies; only then does it produce the statement
+that stores it, the generated text in `generated`. Sources are
 embedded as escaped literals (`Literal.quote`), proved to round-trip and to stay inside their
 literal.
 
@@ -42,6 +46,8 @@ structure Stored where
   status : String := "ok"
   /-- The error of a broken module. -/
   error : String := ""
+  /-- The text its meta-rules generated at the last save or recheck. -/
+  generated : String := ""
   deriving Repr, Inhabited
 
 /-- Name of the unit holding the generated signature; not a valid module name. -/
@@ -65,6 +71,9 @@ structure Derived where
   /-- The rule analyzer's verdict for each entry point, its own and those of the modules it
   accumulates; empty for modules saved before the analyzer existed. -/
   verdicts : List Analysis.EntryVerdict := []
+  /-- The module has meta-rules, or accumulates a module that has: its code depends on the whole
+  schema description, so its hash covers the whole schema. -/
+  staged : Bool := false
   deriving Repr, Inhabited, BEq
 
 namespace Derived
@@ -73,7 +82,7 @@ def toJson (d : Derived) : Json :=
   Json.mkObj [("declares", Lean.toJson d.declares), ("defines", Lean.toJson d.defines),
     ("calls_generated", Lean.toJson d.callsGenerated), ("accumulates", Lean.toJson d.accumulates),
     ("entries", Lean.toJson d.entries), ("reached", Lean.toJson d.reached),
-    ("verdicts", Json.arr (d.verdicts.map (·.toJson)).toArray)]
+    ("verdicts", Json.arr (d.verdicts.map (·.toJson)).toArray), ("staged", d.staged)]
 
 def ofJson? (j : Json) : Except String Derived := do
   return { declares := ← j.getObjValAs? (List String) "declares"
@@ -84,7 +93,8 @@ def ofJson? (j : Json) : Except String Derived := do
            reached := (j.getObjValAs? (List String) "reached").toOption.getD []
            verdicts := ← match j.getObjVal? "verdicts" with
              | .ok (.arr vs) => vs.toList.mapM Analysis.EntryVerdict.ofJson?
-             | _ => pure [] }
+             | _ => pure []
+           staged := (j.getObjValAs? Bool "staged").toOption.getD false }
 
 /-- The derived metadata of a stored module; empty if it has none readable. -/
 def ofStored (m : Stored) : Derived :=
@@ -96,6 +106,11 @@ def validates (d : Derived) : Bool := d.declares.contains "violation"
 
 /-- The verdict of an entry point. -/
 def verdict? (d : Derived) (pred : String) : Option Analysis.EntryVerdict := d.verdicts.find? (·.pred == pred)
+
+/-- The hash a save stores: over the reached tables, or over the whole schema for a staged
+module, whose meta-rules read all of it. -/
+def hashFor (d : Derived) (schema : Schema) : String :=
+  if d.staged then Schema.hash schema else Schema.reachedHash d.reached schema
 
 end Derived
 
@@ -157,6 +172,40 @@ partial def topoOrder (edges : List (String × List String)) : Except String (Li
       | r :: _ => go (done ++ [r]) (todo.erase r)
   go [] names
 
+/-! ### Staged code and libraries -/
+
+/-- Whether a generated identifier is a database predicate of the signature. -/
+def isDbPred (sig : Signature) (ident : String) : Bool := sig.preds.any (·.1 == ident)
+
+/-- Stage 1 of a module source against the schema: its generated text, empty when it has no
+meta section. -/
+def generateFor (schema : Schema) (sig : Signature) (lim : Meta.Stage.Limits) (name : String)
+    (sp : Meta.Stage.Split) : Except String Meta.Stage.Generated :=
+  if sp.hasMeta then
+    Meta.Stage.generate (Meta.Reflect.text schema (isDbPred sig)) (isDbPred sig) name sp.metaRules lim
+  else pure {}
+
+/-- The text a stored module contributes when another module accumulates it: its own clauses
+and its generated text, regenerated when the schema changed since it was stored. -/
+def libText (schema : Schema) (sig : Signature) (lim : Meta.Stage.Limits) (m : Stored) : Except String String := do
+  let sp ← (Meta.Stage.split m.source).mapError (s!"module {m.name}: {·}")
+  if !sp.hasMeta then return m.source
+  let code ← if m.schemaHash == Schema.hash schema then pure m.generated
+    else (generateFor schema sig lim m.name sp).map (·.text) |>.mapError (s!"module {m.name}: {·}")
+  return sp.rules ++ "\n" ++ code
+
+/-- The libraries a module compiles with: every other stored module, and `graph.std`. -/
+def libsOf (schema : Schema) (sig : Signature) (lim : Meta.Stage.Limits) (stored : List Stored)
+    (name : String) : Except String (List (String × String)) := do
+  let mods ← (stored.filter (·.name != name)).mapM fun s => do return (s.name, ← libText schema sig lim s)
+  return mods ++ [(Meta.GraphStd.name, Meta.GraphStd.source)]
+
+/-- The program units of a module: the signature, its own clauses, and its generated text. -/
+def unitsOf (sig : Signature) (name : String) (sp : Meta.Stage.Split) (gen : Meta.Stage.Generated) :
+    List (String × String) :=
+  [(signatureUnit, sig.text), (name, sp.rules)] ++
+    (if gen.text.isEmpty then [] else [(Meta.Stage.genUnit name, gen.text)])
+
 /-! ### Statements -/
 
 /-- Create the system tables if they are missing. -/
@@ -168,6 +217,8 @@ def initStatements : List String :=
    -- tables made by the tracer bullet have no error column yet
    "ALTER TABLE _elpi_module ADD IF NOT EXISTS error STRING DEFAULT ''",
    "CREATE REL TABLE IF NOT EXISTS _elpi_accumulates(FROM _elpi_module TO _elpi_module)",
+   "CREATE NODE TABLE IF NOT EXISTS _elpi_annotation(id STRING PRIMARY KEY, table_name STRING, " ++
+     "key STRING, value STRING)",
    "RETURN 'ok' AS result"]
 
 /-- Store a checked module: one statement that bumps the version, writes the row and replaces
@@ -193,7 +244,7 @@ structure Checked where
   name : String
   derived : Derived
   schemaHash : String
-  /-- The generated signature text it was checked against. -/
+  /-- The text its meta-rules generated; empty without a meta section. -/
   generated : String
   warnings : List String
   statement : String
@@ -239,24 +290,35 @@ Nothing is written unless this succeeds. -/
 -- @tg: implements:: [[openspec:rule-storage#Save checks before storing]]
 -- @tg: implements:: [[openspec:rule-storage#Derived module metadata]]
 -- @tg: implements:: [[openspec:rule-storage#Accumulate dependencies]]
-def check (schema : Schema) (stored : List Stored) (name source : String) :
+-- @tg: implements:: [[openspec:rule-generation#Generated code is checked like source]]
+def check (schema : Schema) (stored : List Stored) (name source : String) (lim : Meta.Stage.Limits := {}) :
     Except String Checked := do
   if name.isEmpty || name == signatureUnit then throw s!"'{name}' is not a module name"
+  if name == Meta.GraphStd.name then throw s!"'{name}' is the built-in library; choose another module name"
   let sig ← (Signature.ofSchema (Engine.reservedNames.contains ·) schema).mapError
     (s!"signature: {·}")
-  let direct ← (Engine.accumulates name source).mapError errorText
+  let sp ← Meta.Stage.split source
+  let direct ← (Engine.accumulates name sp.rules).mapError errorText
   for d in direct do
-    unless stored.any (·.name == d) do
+    unless stored.any (·.name == d) || d == Meta.GraphStd.name do
       throw s!"module {name} accumulates {d}, which is not stored"
   let edges := (name, direct) :: (edgesOf stored).filter (·.1 != name)
   if let some cyc := findCycle edges name then
     throw s!"module {name} would make an accumulate cycle: {" → ".intercalate cyc}"
-  let units := [(signatureUnit, sig.text), (name, source)]
-  let libs := (stored.filter (·.name != name)).map fun s => (s.name, s.source)
-  let own ← (Engine.clauses units libs (· == name)).mapError errorText
+  let gen ← generateFor schema sig lim name sp
+  let units := unitsOf sig name sp gen
+  let libs ← libsOf schema sig lim stored name
+  let located := Meta.Stage.locate name gen
+  let mine (u : String) : Bool := u == name || u == Meta.Stage.genUnit name
+  let own ← (Engine.clauses units libs mine).mapError located
   -- the module, the modules it accumulates and the signature (for the predicates' types)
-  let all ← (Engine.clauses units libs).mapError errorText
+  let all ← (Engine.clauses units libs).mapError located
   let generated := sig.preds.map (·.1)
+  unless gen.text.isEmpty do
+    let hand ← (Engine.clauses units libs (· == name)).mapError located
+    let made ← (Engine.clauses units libs (· == Meta.Stage.genUnit name)).mapError located
+    Meta.Stage.checkHeads (hand.preds.toList.map (·.name) ++ generated) (made.clauses.toList.map (·.pred)).eraseDups
+      |>.mapError (s!"{Meta.Stage.genUnit name}: {·}")
   let mentioned := all.clauses.toList.flatMap fun c => termNames c.head ++ goalNames c.body
   checkProtocol own
   let declares := own.preds.toList.map (·.name)
@@ -265,7 +327,7 @@ def check (schema : Schema) (stored : List Stored) (name source : String) :
   let deps := direct.filterMap fun d => (stored.find? (·.name == d)).map Derived.ofStored
   let declared := own.preds.toList.flatMap (fun p => p.args.toList.flatMap (tyNames ·.ty)) ++
     own.types.toList.flatMap (tyNames ·.2)
-  let anns ← Analysis.annotations source
+  let anns ← Analysis.annotations sp.rules
   let entries := (all.preds.toList.map (·.name)).filter (!generated.contains ·)
   let (verdicts, analysisWarnings) ← Analysis.analyze (.ofAst all sig.preds) sig entries anns
   let reached := (mentioned ++ declared).filterMap sig.tableOf? ++ deps.flatMap (·.reached) ++
@@ -279,15 +341,17 @@ def check (schema : Schema) (stored : List Stored) (name source : String) :
       accumulates := direct
       entries := declares
       reached := Schema.sortStrings reached.eraseDups
-      verdicts }
-  let hash := Schema.reachedHash derived.reached schema
-  return { name, derived, schemaHash := hash, generated := sig.text, warnings
-           statement := saveStatement name source hash derived.toJson.compress direct warnings sig.text }
+      verdicts
+      staged := sp.hasMeta || deps.any (·.staged) }
+  let hash := derived.hashFor schema
+  return { name, derived, schemaHash := hash, generated := gen.text, warnings
+           statement := saveStatement name source hash derived.toJson.compress direct warnings gen.text }
 
 /-- `elpi_save`: the statements storing one checked module. -/
-def save (schema : Schema) (stored : List Stored) (name source : String) :
+-- @tg: implements:: [[openspec:rule-generation#Inspectable generated code]]
+def save (schema : Schema) (stored : List Stored) (name source : String) (lim : Meta.Stage.Limits := {}) :
     Except String (List String × List String) := do
-  let c ← check schema stored name source
+  let c ← check schema stored name source lim
   return ([c.statement], c.warnings)
 
 /-! ### Recheck -/
@@ -306,32 +370,29 @@ structure Recheck where
 
 /-- Regenerate and recheck one stored module against the current schema. A module whose
 stored hash differs from the recomputed one was `stale`. -/
-def recheckOne (schema : Schema) (stored : List Stored) (m : Stored) : Recheck :=
-  let oldHash := Schema.reachedHash (Derived.ofStored m).reached schema
+def recheckOne (schema : Schema) (stored : List Stored) (m : Stored) (lim : Meta.Stage.Limits := {}) : Recheck :=
+  let oldHash := (Derived.ofStored m).hashFor schema
   let old := if m.status == "ok" && m.schemaHash != oldHash then "stale"
     else if m.status.isEmpty then "ok" else m.status
-  match check schema stored m.name m.source with
+  match check schema stored m.name m.source lim with
   | .ok c => { name := m.name, oldStatus := old, newStatus := "ok", error := "", schemaHash := c.schemaHash
                generated := c.generated, derived := c.derived.toJson.compress }
   | .error e =>
-    let gen := match Signature.ofSchema (Engine.reservedNames.contains ·) schema with
-      | .ok sig => sig.text
-      | .error _ => ""
     { name := m.name, oldStatus := old, newStatus := "broken", error := e, schemaHash := oldHash
-      generated := gen, derived := m.derived }
+      generated := m.generated, derived := m.derived }
 
-/-- `elpi_recheck`: one statement that persists the hash, generated signature, status and error
+/-- `elpi_recheck`: one statement that persists the hash, generated text, status and error
 of every listed module (all modules, by name, when `names` is `none`) and returns the report
 `(module, old_status, new_status, error)`; being one statement, it updates every row or none. -/
 -- @tg: implements:: [[openspec:schema-evolution#Explicit recheck]]
 -- @tg: implements:: [[openspec:schema-evolution#Broken module status]]
-def recheck (schema : Schema) (stored : List Stored) (names : Option (List String)) :
-    Except String (List String) := do
+def recheck (schema : Schema) (stored : List Stored) (names : Option (List String))
+    (lim : Meta.Stage.Limits := {}) : Except String (List String) := do
   let targets := names.getD (Schema.sortStrings (stored.map (·.name)))
   let mods ← targets.mapM fun n => match stored.find? (·.name == n) with
     | some m => pure m
     | none => throw s!"no module named {n}"
-  let rows := mods.map (recheckOne schema stored)
+  let rows := mods.map (recheckOne schema stored · lim)
   if rows.isEmpty then
     return ["UNWIND CAST([] AS STRING[]) AS x RETURN x AS module, x AS old_status, x AS new_status, x AS error"]
   let q := Literal.quote
@@ -342,6 +403,26 @@ def recheck (schema : Schema) (stored : List Stored) (names : Option (List Strin
     "MATCH (m:_elpi_module {name: r.name}) " ++
     "SET m.schema_hash = r.hash, m.generated = r.gen, m.status = r.new, m.error = r.err, m.derived = r.derived " ++
     "RETURN r.name AS module, r.old AS old_status, r.new AS new_status, r.err AS error"]
+
+/-! ### Annotations -/
+
+/-- `elpi_annotate`: insert or replace an annotation on a user table, or remove it when `value`
+is empty. Only tables of the visible schema can be annotated, so no annotation names an `_elpi_*`
+table. The annotation enters the schema hash of every module that reaches the table. -/
+-- @tg: implements:: [[openspec:schema-reflection#Schema annotations]]
+def annotate (schema : Schema) (table key value : String) : Except String (List String) := do
+  let v := schema.visible
+  unless v.nodes.any (·.name == table) || v.rels.any (·.name == table) do
+    throw s!"no user table named {table}"
+  if key.isEmpty then throw "the annotation key must not be empty"
+  let q := Literal.quote
+  -- a table name has no '/', so the id is unique per (table, key)
+  let id := q (table ++ "/" ++ key)
+  if value.isEmpty then
+    return [s!"OPTIONAL MATCH (a:_elpi_annotation \{id: {id}}) DELETE a " ++
+      s!"RETURN {q table} AS table_name, {q key} AS key, '' AS value"]
+  return [s!"MERGE (a:_elpi_annotation \{id: {id}}) SET a.table_name = {q table}, a.key = {q key}, " ++
+    s!"a.value = {q value} RETURN a.table_name AS table_name, a.key AS key, a.value AS value"]
 
 /-! ### Drop, export and import -/
 
@@ -356,14 +437,15 @@ def drop (stored : List Stored) (name : String) : Except String (List String) :=
   let q := Literal.quote name
   return [s!"MATCH (m:_elpi_module \{name: {q}}) DETACH DELETE m RETURN {q} AS dropped"]
 
-/-- `elpi_export`: every module after the modules it accumulates. -/
+/-- `elpi_export`: every module after the modules it accumulates; only sources, since generated
+text is derived and an import regenerates it. -/
 -- @tg: implements:: [[openspec:rule-storage#Export and import]]
 def exportOrder (stored : List Stored) : Except String (List Stored) := do
   let order ← topoOrder (edgesOf stored)
   return order.filterMap fun n => stored.find? (·.name == n)
 
 /-- `elpi_import`: save a bundle `[{name, source}, …]` in dependency order, all or nothing. -/
-def importBundle (schema : Schema) (stored : List Stored) (bundle : String) :
+def importBundle (schema : Schema) (stored : List Stored) (bundle : String) (lim : Meta.Stage.Limits := {}) :
     Except String (List String × List String) := do
   let j ← Json.parse bundle
   let items ← match j with
@@ -377,10 +459,10 @@ def importBundle (schema : Schema) (stored : List Stored) (bundle : String) :
   let mut warnings : List String := []
   for n in order do
     let some m := mods.find? (·.name == n) | continue
-    let c ← (check schema known m.name m.source).mapError (s!"module {n}: {·}")
+    let c ← (check schema known m.name m.source lim).mapError (s!"module {n}: {·}")
     stmts := stmts ++ [c.statement]
     warnings := warnings ++ c.warnings
-    known := m :: known.filter (·.name != n)
+    known := { m with schemaHash := c.schemaHash, generated := c.generated } :: known.filter (·.name != n)
   return (stmts ++ [s!"RETURN {order.length} AS imported"], warnings.eraseDups)
 
 end Marien.Store

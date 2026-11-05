@@ -30,10 +30,18 @@ private def stored (modulesJson : String) : Except String (List Stored) := do
     let opt (k : String) (d : String) := (r.getObjValAs? String k).toOption.getD d
     return { name := ← r.getObjValAs? String "name", version := ← r.getObjValAs? Nat "version"
              source := ← r.getObjValAs? String "source", derived := opt "derived" ""
-             schemaHash := opt "schema_hash" "", status := opt "status" "ok", error := opt "error" "" }
+             schemaHash := opt "schema_hash" "", status := opt "status" "ok", error := opt "error" ""
+             generated := opt "generated" "" }
 
 private def schema (catalog : String) : Except String Schema :=
   (Schema.parse catalog).mapError (s!"catalog: {·}")
+
+/-- Stage 1's budgets, which the shim sends with the catalog as
+`"limits": {"fuel": n, "max_generated_bytes": m}` (`elpi_fuel`, `elpi_max_generated_bytes`). -/
+private def limits (catalog : String) : Meta.Stage.Limits :=
+  let l := (Json.parse catalog).toOption.bind fun j => (j.getObjVal? "limits").toOption
+  let nat (k : String) (d : Nat) : Nat := (l.bind fun l => (l.getObjValAs? Nat k).toOption).getD d
+  { fuel := nat "fuel" Engine.defaultFuel, maxBytes := nat "max_generated_bytes" 1000000 }
 
 /-! ### Signature -/
 
@@ -58,8 +66,13 @@ def initStatements (_ : Unit) : Array String := Store.initStatements.toArray
 
 @[export marien_save]
 def save (catalog modules name source : String) : Except String (Array String) := do
-  let (stmts, _) ← Store.save (← schema catalog) (← stored modules) name source
+  let (stmts, _) ← Store.save (← schema catalog) (← stored modules) name source (limits catalog)
   return stmts.toArray
+
+/-- `elpi_annotate`: the statement that writes or removes one annotation. -/
+@[export marien_annotate]
+def annotateC (catalog table key value : String) : Except String (Array String) := do
+  return (← Store.annotate (← schema catalog) table key value).toArray
 
 @[export marien_drop]
 def drop (modules name : String) : Except String (Array String) := do
@@ -73,7 +86,7 @@ def «export» (modules : String) : Except String (Array String) := do
 
 @[export marien_import]
 def «import» (catalog modules bundle : String) : Except String (Array String) := do
-  let (stmts, _) ← Store.importBundle (← schema catalog) (← stored modules) bundle
+  let (stmts, _) ← Store.importBundle (← schema catalog) (← stored modules) bundle (limits catalog)
   return stmts.toArray
 
 /-! ### Values from the scanner -/
@@ -97,7 +110,7 @@ def «import» (catalog modules bundle : String) : Except String (Array String) 
 def recheckC (catalog modules : String) (names : Array String) (all : UInt8) :
     Except String (Array String) := do
   return (← Store.recheck (← schema catalog) (← stored modules)
-    (if all != 0 then none else some names.toList)).toArray
+    (if all != 0 then none else some names.toList) (limits catalog)).toArray
 
 /-! ### Queries -/
 
@@ -122,7 +135,7 @@ private def withCache (catalog modules : String) (cacheSize : UInt64)
 @[export marien_query_prepare]
 def queryPrepare (catalog modules name goal : String) (maxFacts cacheSize : UInt64) :
     IO (Except String Session) :=
-  withCache catalog modules cacheSize fun c sc st => prepare c sc st name maxFacts.toNat goal
+  withCache catalog modules cacheSize fun c sc st => prepare c sc st name maxFacts.toNat goal (limits catalog)
 
 /-- `elpi_run`: open a session for `pred` with the named parameters; `narrowed` when the call
 passes a scope. -/
@@ -130,7 +143,7 @@ passes a scope. -/
 def runPrepare (catalog modules name pred : String) (names : Array String) (values : Array Value)
     (maxFacts cacheSize : UInt64) (narrowed : UInt8) : IO (Except String Session) :=
   withCache catalog modules cacheSize fun c sc st =>
-    prepareRun c sc st name pred (names.toList.zip values.toList) maxFacts.toNat (narrowed != 0)
+    prepareRun c sc st name pred (names.toList.zip values.toList) maxFacts.toNat (narrowed != 0) (limits catalog)
 
 /-- The output columns of a typed session: `[name, type token…]` each (`Codec.Col.ltyTokens`). -/
 @[export marien_session_columns]
@@ -151,7 +164,7 @@ def validatePrepare (catalog modules name minSeverity : String) (maxFacts cacheS
   let some sev := Severity.ofName? minSeverity
     | return .error s!"min_severity must be error, warning or info, not {minSeverity.quote}"
   withCache catalog modules cacheSize fun c sc st =>
-    prepareValidate c sc st name maxFacts.toNat sev (narrowed != 0)
+    prepareValidate c sc st name maxFacts.toNat sev (narrowed != 0) (limits catalog)
 
 /-! ### Partitions -/
 

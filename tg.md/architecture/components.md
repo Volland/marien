@@ -153,6 +153,7 @@ Source text is stored byte-exact; `unescape (escape s) = s` and the absence of a
 - introduced_by:: [[changes#add-tracer-bullet]]
 - changed_by:: [[changes#add-typed-validation]] {note: "reached tables and hash, the violation signature check, status and error, elpi_recheck"}
 - changed_by:: [[changes#add-analysis-and-partitioning]] {note: "the rule analyzer at save and recheck, verdicts in derived"}
+- changed_by:: [[changes#add-higher-order-layer]] {note: "stage 1 in check, generated text in _elpi_module.generated, _elpi_annotation and elpi_annotate, graph.std as a library"}
 
 ## Handle cache
 
@@ -168,6 +169,7 @@ From M2 the schema hash in the key is the module's reached-table hash, so DDL on
 - motivated_by:: [[decisions#Handle cache keyed by source hashes]]
 - introduced_by:: [[changes#add-tracer-bullet]]
 - changed_by:: [[changes#add-typed-validation]] {note: "keyed by the reached-table hash"}
+- changed_by:: [[changes#add-higher-order-layer]] {note: "staged modules key on the whole-schema hash, which determines their generated text"}
 
 ## Executor
 
@@ -263,6 +265,8 @@ Tarjan's algorithm (without recursion) gives `in_cycle` (a component with anothe
 
 Produces the monomorphic deep description of the schema and its annotations (`schema.node`, `schema.rel`, `schema.prop`, `schema.annot`) for meta-rules. Source: `Marien/Meta/Reflect.lean`.
 
+`ofSchema` renders facts of the visible schema (`schema.key`, `schema.ident` and `schema.prop_ident` too) and sorts them; `ofSchema_no_system` and `ofSchema_perm` prove that no `_elpi_*` table appears and that catalog order does not matter.
+
 - module:: Marien.Meta.Reflect
 - milestone:: M4
 - depends_on:: [[components#Schema model]]
@@ -274,21 +278,30 @@ Produces the monomorphic deep description of the schema and its annotations (`sc
 
 Runs stage-1 meta-rules over the reflected schema and returns clause text for stage 2, which is typechecked and analysed like hand-written code. Source: `Marien/Meta/Stage.lean`.
 
+`split` cuts the `% @marien meta` section out of a source, `generate` runs `generate S` under fuel and the byte cap and concatenates its solutions, `checkHeads` refuses clauses for undeclared predicates and `locate` traces an error in generated text to its solution. The [[components#Module store]] calls it from `check`, so save, recheck, import and the lazy recheck of a run all generate the same way.
+
 - module:: Marien.Meta.Stage
 - milestone:: M4
 - depends_on:: [[components#Schema reflector]]
 - depends_on:: [[components#Rule analyzer]]
 - motivated_by:: [[decisions#Staged rule generation over a reflected schema]]
+- motivated_by:: [[decisions#Meta-rules in a marked section of the module]]
+- motivated_by:: [[decisions#Stage one is bounded by fuel and size, never by a clock]]
+- motivated_by:: [[decisions#Generated clauses only for declared predicates]]
 - introduced_by:: [[changes#add-higher-order-layer]]
 
 ## Graph standard library
 
 The `graph.std` ELPI module: combinators such as `closure`, `acyclic`, `functional`, `symmetric` and `card`, polymorphic over relation predicates. Source: `lib/graph/std.elpi`.
 
+Built in with `include_str` (`Marien/Meta/GraphStd.lean`); its answer sets equal Lean references on random relations (`tests/GraphStd/`), and its locality claims are tested against the analysis.
+
 - module:: lib/graph/std.elpi
 - milestone:: M4
 - motivated_by:: [[decisions#Predicate-per-property encoding]]
 - motivated_by:: [[decisions#Staged rule generation over a reflected schema]]
+- motivated_by:: [[decisions#graph.std is built into the extension]]
+- motivated_by:: [[decisions#Combinators take the node predicate where they enumerate nodes]]
 - introduced_by:: [[changes#add-higher-order-layer]]
 
 ## Offline codegen

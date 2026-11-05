@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "binder/binder.h"
+#include "catalog/catalog.h"
 #include "common/exception/interrupt.h"
 #include "common/exception/runtime.h"
 #include "common/types/date_t.h"
@@ -39,6 +40,7 @@
 #include "main/database.h"
 #include "storage/storage_version_info.h"
 #include "processor/execution_context.h"
+#include "transaction/transaction.h"
 #include "transaction/transaction_context.h"
 
 #include "shim.h"
@@ -68,6 +70,7 @@ constexpr Option options[] = {
     {"elpi_slice_steps", 100000},   // steps between interrupt and deadline checks
     {"elpi_cache_size", 64},        // compiled modules kept in memory
     {"elpi_partition_batch", 10000}, // anchors per batch of a partitioned run; key rows per bucket
+    {"elpi_max_generated_bytes", 1000000}, // text stage 1 meta-rules may generate per module
 };
 
 uint64_t setting(ClientContext& ctx, const char* name) {
@@ -189,6 +192,30 @@ struct ElpiSave {
                     marien_bridge_save(catalog.c_str(), stored.c_str(), module.c_str(), source.data(),
                         source.size()),
                     "elpi_save " + module));
+            }));
+        return set;
+    }
+};
+
+// @tg: implements:: [[openspec:schema-reflection#Schema annotations]]
+struct ElpiAnnotate {
+    static constexpr const char* name = "ELPI_ANNOTATE";
+    static function_set getFunctionSet() {
+        function_set set;
+        set.push_back(writeFunction(name, {LogicalTypeID::STRING, LogicalTypeID::STRING, LogicalTypeID::STRING},
+            [](const ClientContext* c, const TableFuncBindInput* in) {
+                auto& ctx = const_cast<ClientContext&>(*c);
+                auto table = literal(in, 0, "elpi_annotate");
+                auto key = literal(in, 1, "elpi_annotate");
+                auto value = literal(in, 2, "elpi_annotate");
+                auto tx = lbug::transaction::Transaction::Get(ctx);
+                if (!lbug::catalog::Catalog::Get(ctx)->containsTable(tx, "_elpi_annotation")) {
+                    throw RuntimeException("elpi_annotate: the annotation table does not exist; run CALL elpi_init() first");
+                }
+                auto catalog = catalogJson(ctx);
+                return std::make_unique<StatementsBindData>(takeStrings(
+                    marien_bridge_annotate(catalog.c_str(), table.c_str(), key.c_str(), value.c_str()),
+                    "elpi_annotate " + table));
             }));
         return set;
     }
@@ -1123,6 +1150,7 @@ __attribute__((visibility("default"))) void init(ClientContext* context) {
     ExtensionUtils::addStandaloneTableFunc<marien::ElpiInit>(db);
     ExtensionUtils::addStandaloneTableFunc<marien::ElpiSave>(db);
     ExtensionUtils::addStandaloneTableFunc<marien::ElpiDrop>(db);
+    ExtensionUtils::addStandaloneTableFunc<marien::ElpiAnnotate>(db);
     ExtensionUtils::addStandaloneTableFunc<marien::ElpiImport>(db);
     ExtensionUtils::addStandaloneTableFunc<marien::ElpiRecheck>(db);
     ExtensionUtils::addTableFunc<marien::ElpiExport>(db);
