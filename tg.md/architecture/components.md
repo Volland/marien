@@ -38,6 +38,9 @@ The C ABI between shim and Lean: runtime start-up, per-thread initialization, ha
 
 The Lean entry points (`Marien/Ffi.lean`) take and return strings, string arrays, value arrays and opaque handles; `shim/lean_bridge.h` turns them into a plain C API whose symbols all start with `marien_bridge_`, the only Lean-side symbols the Linux link keeps global. Follows LeanElpi's `ensure_thread` pattern: a thread-local flag calls `lean_initialize_thread` once per LadybugDB worker thread. Starts the runtime once per process under `pthread_once`, and defines a runtime-only `lean_initialize` so the Lean compiler package is never linked. Prototype: `spike/bridge.c`. The Lean side calls LeanElpi only through its `Elpi.Host` module (signatures, goals from terms, fuel slices, facts as terms, clause AST).
 
+
+**Prebuilt archive (M5).** `scripts/build-lean-archive.sh` packs the bridge, Marien, LeanElpi and the Lean runtime as `libmarien_lean.a` with `lean_bridge.h` and the CMake target `marien::lean`; with `-DMARIEN_LEAN_ARCHIVE` the shim builds against it without a Lean toolchain (`scripts/test-lean-archive.sh`). Only `marien_bridge_*` is global, except on macOS, where GMP and libuv sit in a second object ([[constraints#ld64 drops dead stripping when one object lacks subsections]]).
+
 - module:: Marien.Ffi
 - milestone:: Spike
 - motivated_by:: [[decisions#Logic in Lean behind a thin C++ shim]]
@@ -46,6 +49,7 @@ The Lean entry points (`Marien/Ffi.lean`) take and return strings, string arrays
 - motivated_by:: [[decisions#Catalog as JSON, rows as column batches]]
 - changed_by:: [[changes#add-tracer-bullet]]
 - introduced_by:: [[changes#spike-lean-runtime-in-ladybug]]
+- changed_by:: [[changes#add-ecosystem]] {note: "marien_bridge_statement, the format argument of marien_bridge_signature, and the prebuilt archive"}
 
 ## Engine contract
 
@@ -116,6 +120,7 @@ Every signature starts with the validation protocol's `severity` and `subject` k
 - changed_by:: [[changes#add-typed-validation]] {note: "protocol declarations and subject constructors"}
 - motivated_by:: [[decisions#Generated predicates are indexed to depth 2]]
 - changed_by:: [[changes#add-analysis-and-partitioning]] {note: "structural predicates and index declarations"}
+- changed_by:: [[changes#add-ecosystem]] {note: "structured declarations (Decl) printed by ElpiPrinter behind SignaturePrinter, shared with the offline LeanPrinter"}
 
 ## Value codec
 
@@ -308,17 +313,22 @@ Built in with `include_str` (`Marien/Meta/GraphStd.lean`); its answer sets equal
 
 The `marien-codegen` Lake executable: reads a schema dump and emits a Lean module of inductives with `deriving Elpi`, using the same encoding as the runtime. Source: `Marien/Offline/Codegen.lean`.
 
+`lake exe marien-codegen <dump.json> -o <Module.lean> [--namespace Ns]` parses the dump (`Dump.parse` in `Marien/Encoding/Dump.lean`), calls `Signature.ofSchema`, prints with `LeanPrinter.module`, elaborates the module in process (`elaborate`, one cached import of `Elpi`), and runs `checkAgreement` on the derived and runtime declarations. It writes the module only when they agree; exit 1 names the first difference, exit 2 is a usage error. It refuses constructors named `rec`, `below` or `ibelow` (Lean auxiliaries) and a schema with no tables. `Marien.lean` does not import it, so the extension's archive is unchanged. CLI: `Marien/Offline/Main.lean`; tests: `tests/M5.lean` and `tests/offline/run.sh`.
+
 - module:: Marien.Offline.Codegen
 - milestone:: M5
 - depends_on:: [[components#Signature generator]]
 - motivated_by:: [[decisions#Schema types at runtime and Lean inductives offline]]
 - introduced_by:: [[changes#add-ecosystem]]
+- motivated_by:: [[decisions#One encoding, two printers]] {weight: primary}
+- motivated_by:: [[decisions#The generated module accumulates the runtime signature]]
+- depends_on:: [[components#Schema model]] {note: "the schema dump"}
 
 ## Test harness
 
 Generators of random schemas, graphs and modules, the differential properties, end-to-end tests against an embedded LadybugDB and the Soufflé oracle. Source: `tests/`.
 
-The Soufflé oracle arrives in M5.
+M5: the Soufflé oracle. `tests/SouffleOracle/Translate.lean` parses a module with its own small parser, classifies the clauses reached from the entry point and translates the first-order stratified fragment into Soufflé, with the facts of the generated graph at full or narrowed scope; `marien-gen oracle` writes a case directory, `property rows` (`tests/differential/property.c`) writes Marien's answers, and `tests/oracle/souffle/run.sh` compares them as multisets for full scope, partitioned, and the reasoning predicate at full and narrowed scope, counting skips by reason and leaving reproducers under `tests/oracle/souffle/failures/`. `--self-test` drops one of Marien's answers and expects a reproducer. `tests/M5.lean` tests the offline codegen; `tests/offline/run.sh` runs it on a dump LadybugDB wrote.
 
 M3: `tests/M3.lean` covers the analyzer and the planner; `tests/Property/` holds the seeded generator, its unit tests and the Lean model that measures rejections; `tests/differential/` runs partition equivalence and narrowing against an embedded LadybugDB.
 
@@ -329,10 +339,15 @@ M3: `tests/M3.lean` covers the analyzer and the planner; `tests/Property/` holds
 - motivated_by:: [[decisions#Differential testing with an oracle]]
 - introduced_by:: [[changes#add-analysis-and-partitioning]]
 - motivated_by:: [[decisions#Differential properties with a Lean generator and a C runner]]
+- motivated_by:: [[decisions#Soufflé over the first-order stratified fragment]]
+- motivated_by:: [[decisions#Proof relations keep answer multiplicities]]
+- changed_by:: [[changes#add-ecosystem]] {note: "Soufflé oracle and offline codegen tests"}
 
 ## Statement extension
 
-Custom statements such as `CREATE RULES`, `CHECK RULES` and `VALIDATE` through LadybugDB's transformer, binder, planner and mapper pipeline, as syntax over the table functions. Source: `shim/statements.cpp`.
+Custom statements such as `CREATE RULES`, `CHECK RULES` and `VALIDATE` as syntax over the table functions: a transformer that desugars each one to the parse tree of its `CALL` form. Source: `shim/statements.cpp`, `Marien/Statement.lean`.
+
+The grammar, the dollar-quote lexer and the desugaring are Lean (`Statement.parse`, `desugar`, proofs `desugar_total` and `source_roundtrip`), behind `marien_bridge_statement`. The transformer builds a `StandaloneCallFunction` (or `CALL elpi_validate(…) RETURN *`) with literal arguments, copying the function node from LadybugDB's own parse of `CALL <fn>()`, and returns nothing for text that is not Marien's. LadybugDB 0.22.1 reaches it only with `CREATE USER` and `CREATE ROLE`, so `CALL elpi_statement('<statement>')` runs statements through the bind of their `CALL` form meanwhile; the write functions' binds are shared for that.
 
 - module:: shim/statements.cpp
 - milestone:: M5

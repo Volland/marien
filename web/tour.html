@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Marien tour · KYC on a graph</title>
+<meta name="description" content="A walk through Marien on a know-your-customer graph: schema types, compliance rules, validation reports, typed queries, partitions, generated rules and schema changes, with real output.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<div class="band">
+  <div class="wrap">
+    <nav class="top">
+      <a class="brand" href="./"><img src="favicon.svg" alt="">Marien</a>
+      <div class="links">
+        <a href="./" class="wide">Home</a>
+        <a href="tour.html" aria-current="page">Tour</a>
+        <a href="guide.html">Guide</a>
+        <a href="https://github.com/Volland/marien" class="wide">GitHub</a>
+        <a href="./#download" class="pill">Download</a>
+      </div>
+    </nav>
+    <header class="page-hero">
+      <p class="eyebrow">TOUR · KNOW YOUR CUSTOMER</p>
+      <h1>Who really owns <em>Orchid Capital?</em></h1>
+      <p>A compliance team keeps people, companies and bank accounts in LadybugDB. This tour writes their checks as Marien rules and runs them. Every result below is what the LadybugDB __LBUG__ CLI printed for <a href="https://github.com/Volland/marien/tree/main/examples/kyc">examples/kyc</a>.</p>
+    </header>
+  </div>
+</div>
+
+<main>
+  <section>
+    <div class="wrap">
+      <figure class="graph">
+        <svg viewBox="0 0 820 430" role="img" aria-labelledby="g-title">
+          <title id="g-title">The ownership graph: four people, five companies and four accounts. Bluefin Trading and Orchid Capital own each other; nobody owns Halcyon Ventures; Marco Rossi has no KYC check; Lena Vogel is a politically exposed person.</title>
+          <defs>
+            <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" style="fill: var(--ink)"/></marker>
+            <marker id="arr-hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" style="fill: var(--orange)"/></marker>
+          </defs>
+          <!-- shareholdings and ownership -->
+          <path class="g-edge" d="M150 57 L228 92" marker-end="url(#arr)"/><text class="g-label" x="172" y="62">60%</text>
+          <path class="g-edge" d="M150 167 L228 108" marker-end="url(#arr)"/><text class="g-label" x="200" y="160">40%</text>
+          <path class="g-edge" d="M390 92 L458 58" marker-end="url(#arr)"/><text class="g-label" x="404" y="66">100%</text>
+          <path class="g-edge hot" d="M620 40 Q700 30 712 108" marker-end="url(#arr-hot)"/><text class="g-label" x="690" y="46">55%</text>
+          <path class="g-edge hot" d="M690 148 Q600 150 594 70" marker-end="url(#arr-hot)"/><text class="g-label" x="618" y="172">45%</text>
+          <path class="g-edge" d="M690 258 L622 302" marker-end="url(#arr)"/><text class="g-label" x="664" y="296">55%</text>
+          <path class="g-edge" d="M150 267 L458 312" marker-end="url(#arr)"/><text class="g-label" x="352" y="280">30%</text>
+          <path class="g-edge" d="M150 347 L458 326" marker-end="url(#arr)"/><text class="g-label" x="352" y="352">15%</text>
+          <!-- accounts held -->
+          <g style="stroke-dasharray: 4 4"><path class="g-edge" d="M310 118 L310 158"/><path class="g-edge" d="M540 68 L540 108"/>
+            <path class="g-edge" d="M150 258 L190 236"/><path class="g-edge" d="M540 338 L540 378"/></g>
+          <!-- people -->
+          <rect class="g-person" x="20" y="40" width="130" height="34" rx="17"/><text class="g-text" x="85" y="62" text-anchor="middle">Ana Petrova</text>
+          <rect class="g-person" x="20" y="150" width="130" height="34" rx="17"/><text class="g-text" x="85" y="172" text-anchor="middle">Marco Rossi</text>
+          <text class="g-flag" x="85" y="202" text-anchor="middle">unverified-ubo</text>
+          <rect class="g-person" x="20" y="250" width="130" height="34" rx="17"/><text class="g-text" x="85" y="272" text-anchor="middle">Lena Vogel · PEP</text>
+          <rect class="g-person" x="20" y="330" width="130" height="34" rx="17"/><text class="g-text" x="85" y="352" text-anchor="middle">Tom Hale</text>
+          <!-- companies -->
+          <rect class="g-company" x="230" y="80" width="160" height="38" rx="7"/><text class="g-text" x="310" y="104" text-anchor="middle">Northwind Holdings</text>
+          <rect class="g-company" x="460" y="30" width="160" height="38" rx="7"/><text class="g-text" x="540" y="54" text-anchor="middle">Bluefin Trading</text>
+          <text class="g-flag" x="540" y="20" text-anchor="middle">circular-ownership</text>
+          <rect class="g-company" x="640" y="110" width="160" height="38" rx="7"/><text class="g-text" x="720" y="134" text-anchor="middle">Orchid Capital</text>
+          <text class="g-flag" x="806" y="166" text-anchor="end">circular-ownership</text>
+          <rect class="g-company" x="460" y="300" width="160" height="38" rx="7"/><text class="g-text" x="540" y="324" text-anchor="middle">Kestrel Logistics</text>
+          <rect class="g-company" x="640" y="220" width="160" height="38" rx="7"/><text class="g-text" x="720" y="244" text-anchor="middle">Halcyon Ventures</text>
+          <text class="g-flag" x="720" y="210" text-anchor="middle">no-ubo</text>
+          <!-- accounts -->
+          <rect class="g-account" x="240" y="160" width="140" height="28" rx="14"/><text class="g-text on-dark" x="310" y="179" text-anchor="middle">LU28 …0000</text>
+          <rect class="g-account" x="470" y="110" width="140" height="28" rx="14"/><text class="g-text on-dark" x="540" y="129" text-anchor="middle">CY17 …0012</text>
+          <rect class="g-account" x="190" y="215" width="140" height="28" rx="14"/><text class="g-text on-dark" x="260" y="234" text-anchor="middle">DE89 …0130</text>
+          <text class="g-flag" x="260" y="206" text-anchor="middle">pep-account</text>
+          <rect class="g-account" x="470" y="380" width="140" height="28" rx="14"/><text class="g-text on-dark" x="540" y="399" text-anchor="middle">NL91 …4300</text>
+        </svg>
+        <div class="legend"><span><i class="p"></i>person</span><span><i class="c"></i>company</span><span><i class="a"></i>account (dashed: holds)</span><span><i class="h"></i>the ownership circle</span><span style="color:var(--orange-ink);font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700">code</span><span style="margin-left:-10px">what the rules report</span></div>
+        <figcaption>Arrows are shareholdings and ownership with their share. The labels in orange are what the rules on this page find.</figcaption>
+      </figure>
+
+      <div class="step">
+        <div class="num">01</div>
+        <div class="stack">
+          <h3>Load Marien and describe the graph</h3>
+          <p>Load the extension by path, create Marien's module tables once, then define the schema in plain Cypher. <code>Holds</code> has two FROM/TO pairs: a person or a company can hold an account.</p>
+          <div class="window"><header><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>schema.cypher</span></header>
+<pre><span class="k">LOAD EXTENSION</span> <span class="s">'./libmarien.lbug_extension'</span>;
+<span class="k">CALL</span> elpi_init();
+
+<span class="k">CREATE NODE TABLE</span> Person(id INT64 <span class="k">PRIMARY KEY</span>, name STRING, country STRING,
+                         pep BOOL, kyc_verified DATE);
+<span class="k">CREATE NODE TABLE</span> Company(id INT64 <span class="k">PRIMARY KEY</span>, name STRING, country STRING);
+<span class="k">CREATE NODE TABLE</span> Account(iban STRING <span class="k">PRIMARY KEY</span>, currency STRING);
+<span class="k">CREATE REL TABLE</span> ShareholderOf(<span class="k">FROM</span> Person <span class="k">TO</span> Company, share DOUBLE);
+<span class="k">CREATE REL TABLE</span> Owns(<span class="k">FROM</span> Company <span class="k">TO</span> Company, share DOUBLE);
+<span class="k">CREATE REL TABLE</span> Holds(<span class="k">FROM</span> Company <span class="k">TO</span> Account, <span class="k">FROM</span> Person <span class="k">TO</span> Account);</pre></div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">02</div>
+        <div class="stack">
+          <h3>The schema becomes types</h3>
+          <p>Marien turns every table into an ELPI kind with a constructor from its primary key, and every property into a predicate. Rules are checked against this signature; you never write it yourself.</p>
+          <div class="window"><header><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>lbug</span></header>
+<pre><span class="k">CALL</span> elpi_signature(<span class="s">'Person'</span>) <span class="k">RETURN</span> text;</pre></div>
+          <div class="result"><header><span>text</span><span>generated from the catalog</span></header>
+<pre style="border-radius:0;background:var(--panel);color:var(--ink)">kind person type.
+:index (2)
+pred person o:person.
+type person int -&gt; person.
+:index (2)
+pred person.name o:person, o:string.
+:index (2)
+pred person.country o:person, o:string.
+:index (2)
+pred person.pep o:person, o:bool.
+:index (2)
+pred person.kyc_verified o:person, o:int.
+type subj_person person -&gt; subject.</pre></div>
+          <p class="note"><code>person 7</code> is the person with key 7, and <code>person P</code> lists them all. A DATE is an <code>int</code> of days since 1970; a BOOL is <code>tt</code> or <code>ff</code>.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">03</div>
+        <div class="stack">
+          <h3>Write the checks as rules</h3>
+          <p>One module, <code>kyc</code>, with four checks. A rule reports a <code>violation</code> with a severity, a code and the subject at fault. <code>graph.std</code> brings ready-made graph combinators such as transitive closure and cycle witnesses.</p>
+          <div class="window"><header><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>kyc.elpi</span></header>
+<pre><span class="k">accumulate</span> graph.std.
+
+<span class="k">pred</span> violation o:severity, o:string, o:subject.
+
+<span class="c">% A shareholder with 25% or more whose KYC check was never completed.</span>
+violation error <span class="s">"unverified-ubo"</span> (subj_person P) :-
+  shareholder_of P E _, shareholder_of.share E S, S &gt;= <span class="n">25.0</span>,
+  <span class="k">not</span> (person.kyc_verified P _).
+
+<span class="c">% Companies that own each other in a circle hide who controls them.</span>
+violation error <span class="s">"circular-ownership"</span> (subj_company C) :-
+  acyclic_witness_in in_cycle.owns C.
+
+<span class="c">% Every company needs at least one person behind it.</span>
+violation warning <span class="s">"no-ubo"</span> (subj_company C) :-
+  company C, <span class="k">not</span> (ultimate_owner _ C).
+
+<span class="c">% Accounts of politically exposed persons need enhanced due diligence.</span>
+violation warning <span class="s">"pep-account"</span> (subj_account A) :-
+  holds (holds.src.person P) _ (holds.dst.account A), person.pep P tt.
+
+<span class="k">pred</span> ultimate_owner o:person, o:company.
+ultimate_owner P C :- shareholder_of P _ C.
+ultimate_owner P C :- shareholder_of P _ D, closure (edge_of owns) D C.
+
+<span class="k">pred</span> ubo_of i:company, o:person.
+ubo_of C P :- ultimate_owner P C.</pre></div>
+          <div class="window"><header><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>lbug</span></header>
+<pre><span class="k">CALL</span> elpi_save(<span class="s">'kyc'</span>, <span class="s">'…the module above…'</span>);</pre></div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">04</div>
+        <div class="stack">
+          <h3>Validate the graph</h3>
+          <p><code>elpi_validate</code> runs every <code>violation</code> rule of the listed modules and returns one report. It is an ordinary table function, so the rows sort, filter and join like any other.</p>
+          <div class="window"><header><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>lbug</span></header>
+<pre><span class="k">CALL</span> elpi_validate([<span class="s">'kyc'</span>])
+<span class="k">RETURN</span> severity, code, subject_label, subject_pk
+<span class="k">ORDER BY</span> severity, code, subject_pk;</pre></div>
+          <div class="result"><header><span>5 rows</span><span>severity · code · subject</span></header><div class="scroll"><table>
+            <tr><th>severity</th><th>code</th><th>subject_label</th><th>subject_pk</th></tr>
+            <tr><td><span class="sev error">error</span></td><td>circular-ownership</td><td>Company</td><td>11</td></tr>
+            <tr><td><span class="sev error">error</span></td><td>circular-ownership</td><td>Company</td><td>12</td></tr>
+            <tr><td><span class="sev error">error</span></td><td>unverified-ubo</td><td>Person</td><td>2</td></tr>
+            <tr><td><span class="sev warning">warning</span></td><td>no-ubo</td><td>Company</td><td>14</td></tr>
+            <tr><td><span class="sev warning">warning</span></td><td>pep-account</td><td>Account</td><td class="long">DE89 3704 0044 0532 0130</td></tr>
+          </table></div></div>
+          <p>Bluefin (11) and Orchid (12) own each other, Marco Rossi (2) holds 40% of Northwind without a KYC date, nobody stands behind Halcyon (14), and Lena Vogel's account needs enhanced due diligence. Kestrel's shareholders, Lena and Tom, both have a KYC date, so it passes.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">05</div>
+        <div class="stack">
+          <h3>Ask typed questions</h3>
+          <p>A predicate with modes is an entry point. <code>elpi_run</code> takes its <code>i:</code> arguments as parameters and returns its <code>o:</code> arguments as typed columns: a person comes back as its key, ready for a <code>MATCH</code>.</p>
+          <div class="window"><header><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>lbug</span></header>
+<pre><span class="k">CALL</span> elpi_run(<span class="s">'kyc'</span>, <span class="s">'ubo_of'</span>, {in1: <span class="n">12</span>})
+<span class="k">WITH DISTINCT</span> out2 <span class="k">MATCH</span> (p:Person {id: out2})
+<span class="k">RETURN</span> p.name <span class="k">AS</span> beneficial_owner <span class="k">ORDER BY</span> beneficial_owner;</pre></div>
+          <div class="result"><header><span>2 rows</span><span>Orchid Capital, through the circle</span></header><div class="scroll"><table>
+            <tr><th>beneficial_owner</th></tr><tr><td>Ana Petrova</td></tr><tr><td>Marco Rossi</td></tr>
+          </table></div></div>
+          <p>While writing rules, <code>elpi_query</code> takes any goal and returns its bindings as structured terms:</p>
+          <div class="window"><header><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>lbug</span></header>
+<pre><span class="k">CALL</span> elpi_query(<span class="s">'kyc'</span>, <span class="s">'shareholder_of P _ (company 13), person.name P N'</span>)
+<span class="k">RETURN</span> sol, var, value <span class="k">ORDER BY</span> sol, var;</pre></div>
+          <div class="result"><header><span>4 rows</span><span>who holds Kestrel Logistics</span></header><div class="scroll"><table>
+            <tr><th>sol</th><th>var</th><th>value</th></tr>
+            <tr><td>0</td><td>N</td><td>["str","Lena Vogel"]</td></tr>
+            <tr><td>0</td><td>P</td><td>["app","person",[["int",3]]]</td></tr>
+            <tr><td>1</td><td>N</td><td>["str","Tom Hale"]</td></tr>
+            <tr><td>1</td><td>P</td><td>["app","person",[["int",4]]]</td></tr>
+          </table></div></div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">06</div>
+        <div class="stack">
+          <h3>Or say it as a statement</h3>
+          <p>Each <code>CALL</code> has a statement form: <code>CREATE RULES … AS $$…$$</code>, <code>DROP RULES</code>, <code>CHECK RULES</code>, <code>VALIDATE</code> and <code>ANNOTATE</code>. LadybugDB __LBUG__ does not yet pass new syntax to extensions, so for now a statement runs through <code>elpi_statement</code>, with exactly the result of its <code>CALL</code>.</p>
+          <div class="window"><header><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>lbug</span></header>
+<pre><span class="k">CALL</span> elpi_statement(<span class="s">'VALIDATE kyc MIN SEVERITY error'</span>);</pre></div>
+          <div class="result"><header><span>3 rows</span><span>the full report columns</span></header><div class="scroll"><table>
+            <tr><th>module</th><th>version</th><th>severity</th><th>code</th><th>message</th><th>subject_label</th><th>subject_pk</th></tr>
+            <tr><td>kyc</td><td>1</td><td><span class="sev error">error</span></td><td>unverified-ubo</td><td>unverified-ubo</td><td>Person</td><td>2</td></tr>
+            <tr><td>kyc</td><td>1</td><td><span class="sev error">error</span></td><td>circular-ownership</td><td>circular-ownership</td><td>Company</td><td>11</td></tr>
+            <tr><td>kyc</td><td>1</td><td><span class="sev error">error</span></td><td>circular-ownership</td><td>circular-ownership</td><td>Company</td><td>12</td></tr>
+          </table></div></div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">07</div>
+        <div class="stack">
+          <h3>Mistakes stop at the door</h3>
+          <p>A module is typechecked against the schema when it is saved. A misspelled property and a date compared with a string are both refused, with the module, line and column.</p>
+          <div class="window"><header><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>lbug</span></header>
+<pre><span class="k">CALL</span> elpi_save(<span class="s">'typo'</span>, <span class="s">'… person.kyc_verifed P D, D &lt; 20000.'</span>);
+<span class="k">CALL</span> elpi_save(<span class="s">'typed'</span>, <span class="s">'… person.kyc_verified P D, D &lt; "2025-01-01".'</span>);</pre></div>
+          <div class="result error"><header><span>refused</span><span>nothing was stored</span></header>
+<pre>elpi_save typo: typo:2:47: undeclared constant 'person.kyc_verifed'
+elpi_save typed: typed:2:76: "2025-01-01" has type string but is used with type int</pre></div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">08</div>
+        <div class="stack">
+          <h3>Partition it for a big graph</h3>
+          <p>A rule that only looks one step away from its subject can run in batches of subjects, each in a fresh store. Declare it, and Marien's locality check decides at save time whether that gives the same answer as full scope; if not, the save fails.</p>
+          <div class="window"><header><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>kyc_people.elpi</span></header>
+<pre><span class="k">pred</span> violation o:severity, o:string, o:subject.
+violation error <span class="s">"unverified-ubo"</span> (subj_person P) :-
+  shareholder_of P E _, shareholder_of.share E S, S &gt;= <span class="n">25.0</span>,
+  <span class="k">not</span> (person.kyc_verified P _).
+<span class="c">% @marien partition violation by person radius 1</span></pre></div>
+          <div class="window"><header><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>lbug</span></header>
+<pre><span class="k">CALL</span> elpi_partition_batch=<span class="n">2</span>;   <span class="c">// two people per batch, to see it work</span>
+<span class="k">CALL</span> elpi_validate([<span class="s">'kyc_people'</span>]) <span class="k">RETURN</span> module, code, subject_pk;</pre></div>
+          <div class="result"><header><span>1 row</span><span>two batches, one answer</span></header><div class="scroll"><table>
+            <tr><th>module</th><th>code</th><th>subject_pk</th></tr><tr><td>kyc_people</td><td>unverified-ubo</td><td>2</td></tr>
+          </table></div></div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">09</div>
+        <div class="stack">
+          <h3>Rules that write rules</h3>
+          <p>Annotate tables, and let a meta-rule read the schema and the annotations to generate checks. The generated clauses are typechecked and analysed like source, stored with the module, and rebuilt when the schema or an annotation changes.</p>
+          <div class="window"><header><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>kyc_meta.elpi</span></header>
+<pre><span class="k">accumulate</span> graph.std.
+<span class="k">pred</span> violation o:severity, o:string, o:subject.
+<span class="c">% @marien meta</span>
+<span class="k">pred</span> generate o:string.
+generate S :- schema.annot T <span class="s">"acyclic"</span> <span class="s">"true"</span>, schema.ident T R,
+  schema.rel T K _, schema.ident K N,
+  S <span class="k">is</span> <span class="s">"violation error \"cycle\" (subj_"</span> ^ N ^ <span class="s">" X) :- acyclic_witness (edge_of "</span> ^ R ^ <span class="s">") X."</span>.
+<span class="c">% @marien end</span></pre></div>
+          <div class="window"><header><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>lbug</span></header>
+<pre><span class="k">CALL</span> elpi_annotate(<span class="s">'Owns'</span>, <span class="s">'acyclic'</span>, <span class="s">'true'</span>);
+<span class="k">CALL</span> elpi_save(<span class="s">'kyc_meta'</span>, <span class="s">'…'</span>);
+<span class="k">MATCH</span> (m:_elpi_module {name: <span class="s">'kyc_meta'</span>}) <span class="k">RETURN</span> m.generated;</pre></div>
+          <div class="result"><header><span>m.generated</span><span>stage one output</span></header>
+<pre style="border-radius:0;background:var(--panel);color:var(--ink)">violation error "cycle" (subj_company X) :- acyclic_witness (edge_of owns) X.</pre></div>
+          <div class="result"><header><span>elpi_validate(['kyc_meta'])</span><span>2 rows</span></header><div class="scroll"><table>
+            <tr><th>code</th><th>subject_label</th><th>subject_pk</th></tr><tr><td>cycle</td><td>Company</td><td>11</td></tr><tr><td>cycle</td><td>Company</td><td>12</td></tr>
+          </table></div></div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="num">10</div>
+        <div class="stack">
+          <h3>When the schema changes</h3>
+          <p>Each module remembers a hash of the tables it reads. Drop a property it uses and the next run says so precisely, instead of quietly answering against a different schema; <code>elpi_recheck</code> records which modules broke. Modules that read nothing that changed stay <code>ok</code>.</p>
+          <div class="window"><header><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>lbug</span></header>
+<pre><span class="k">ALTER TABLE</span> Person <span class="k">DROP</span> kyc_verified;
+<span class="k">CALL</span> elpi_validate([<span class="s">'kyc'</span>]) <span class="k">RETURN</span> code;</pre></div>
+          <div class="result error"><header><span>refused</span><span>the run, not the data</span></header>
+<pre>elpi_validate: module kyc: module kyc (the schema changed since the module was saved): kyc:6:7: undeclared constant 'person.kyc_verified'</pre></div>
+          <div class="window"><header><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>lbug</span></header>
+<pre><span class="k">CALL</span> elpi_recheck();</pre></div>
+          <div class="result"><header><span>3 rows</span><span>every module, rechecked in one statement</span></header><div class="scroll"><table>
+            <tr><th>module</th><th>old_status</th><th>new_status</th><th>error</th></tr>
+            <tr><td>kyc</td><td>stale</td><td>broken</td><td class="long">kyc:6:7: undeclared constant 'person.kyc_verified'</td></tr>
+            <tr><td>kyc_meta</td><td>stale</td><td>ok</td><td></td></tr>
+            <tr><td>kyc_people</td><td>stale</td><td>broken</td><td class="long">kyc_people:4:7: undeclared constant 'person.kyc_verified'</td></tr>
+          </table></div></div>
+          <p class="note"><strong>Next:</strong> the <a href="guide.html">guide</a> covers every function, option and annotation used here, and the ones this tour skipped: narrowed scopes, key partitions, export and import, and Lean types for proofs.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <span><img src="favicon.svg" alt="">Marien __VERSION__ · built on <a href="https://github.com/Volland/lean-elpi">LeanElpi</a> and <a href="https://github.com/LadybugDB/ladybug">LadybugDB</a></span>
+    <span><a href="./">Home</a> · <a href="guide.html">Guide</a> · <a href="https://github.com/Volland/marien">GitHub</a></span>
+  </div>
+</footer>
+</body>
+</html>

@@ -16,6 +16,7 @@
 
 namespace lbug::main {
 class ClientContext;
+class Database;
 }
 namespace lbug::common {
 class Value;
@@ -107,5 +108,24 @@ std::string jsonString(const std::string& s);
 
 // Take a bridge string as std::string and free it.
 std::string takeString(marien_str s);
+
+// A Marien statement desugared to its CALL form (Marien/Statement.lean): the function, whether it
+// returns rows, its Cypher text and its literal arguments. Empty for text that is not a Marien
+// statement; a malformed one throws with the parser's message (statements.cpp).
+struct Desugared {
+    struct Arg {
+        bool list = false;
+        std::string value;
+        std::vector<std::string> items;
+    };
+    std::string fn;
+    bool rows = false;
+    std::string cypher;
+    std::vector<Arg> args;
+};
+std::optional<Desugared> desugarStatement(const std::string& text);
+
+// Registers the statement parser with LadybugDB's transformer extensions (statements.cpp).
+void registerStatements(lbug::main::Database& db);
 
 } // namespace marien

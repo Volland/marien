@@ -439,9 +439,9 @@ Record: `openspec/changes/archive/2026-11-05-add-typed-validation/design.md`.
 
 ## Landing page on the extension server
 
-The Pages site that serves the extension layout also carries Marien's landing page and logo from `web/`, laid over the layout by `scripts/build-site.sh` with the release and LadybugDB versions filled in.
+The Pages site that serves the extension layout also carries Marien's website from `web/` (home, tour, guide, stylesheet, logo), laid over the layout by `scripts/build-site.sh` with the release and LadybugDB versions filled in.
 
-**Context.** A Pages deployment replaces the whole site, so the page cannot be deployed apart from the extension files. **Consequences.** Releases deploy both; between releases `pages.yml` rebuilds the site from the latest release's zips plus the page, and both workflows share one concurrency group. The logo is a ladybug (Marienkäfer) whose wing seam is a λ and whose spots are term trees.
+**Context.** A Pages deployment replaces the whole site, so the page cannot be deployed apart from the extension files. **Consequences.** Releases deploy both; between releases `pages.yml` rebuilds the site from the latest release's zips plus the page, and both workflows share one concurrency group. The logo is an orange, black and white ladybug (Marienkäfer) with a λ on its left wing case and the term tree of `f(a, b)` on its right, the term's nodes being its spots; the favicon is a simplified drawing for small sizes.
 
 - status:: accepted
 - motivated_by:: [[decisions#Releases built from one matrix script]] {weight: primary}
@@ -622,3 +622,95 @@ The locality check inlines a combinator with its relation arguments substituted,
 - status:: accepted
 - motivated_by:: [[decisions#Locality by inlining, conservatively]] {weight: primary}
 - motivated_by:: [[decisions#Partitioned validation]]
+
+## One encoding, two printers
+
+`Signature.ofSchema` returns structured declarations; `ElpiPrinter` renders the text the database loads, and the offline `LeanPrinter` renders one `inductive … deriving Elpi` per kind from the same declarations.
+
+**Context.** The offline types must be the runtime encoding, not a second encoder that has to agree with it. **Consequences.** The in-database text is byte-identical to M4's; `marien-codegen` elaborates its module and compares the declarations `deriving Elpi` registered with `ElpiPrinter`'s, on parsed types, failing with the first differing kind and constructor. `LeanPrinter.derive_eq_elpi` proves the printer correspondence against a model of `deriving Elpi`. Rejected: a second encoder in the tool, and codegen from the runtime ELPI text (a lossy parse back into structure).
+
+- status:: accepted
+- motivated_by:: [[decisions#Schema types at runtime and Lean inductives offline]] {weight: primary}
+- motivated_by:: [[decisions#Logic in Lean behind a thin C++ shim]]
+- motivated_by:: [[decisions#Proofs where practical]]
+- changed_by:: [[changes#add-ecosystem]]
+
+## The generated module accumulates the runtime signature
+
+The module `marien-codegen` emits declares the program `<namespace>.signature` and accumulates the whole `ElpiPrinter` text into it, after the inductives.
+
+**Context.** Derived declarations always precede accumulated ones, and a predicate declared after a constructor of the same name replaces it. The runtime text declares each predicate before its constructor, so re-accumulating it restores the overloading the database has. **Consequences.** A stored module loads against the program unedited; the derived declarations alone are what the agreement check compares.
+
+- status:: accepted
+- motivated_by:: [[constraints#Derived declarations come before accumulated units]] {weight: primary}
+- motivated_by:: [[decisions#Constructor and node predicate share the table name]]
+- changed_by:: [[changes#add-ecosystem]]
+
+## The schema dump is the catalog JSON, canonical
+
+`CALL elpi_signature(format := 'json')` returns the catalog JSON that `Schema.ofJson` already parses, with a `format` tag, sorted keys and sorted tables, properties, pairs and annotations; STRUCT fields keep their order.
+
+**Context.** The offline tool must build the same `Schema` value the extension builds. **Consequences.** No second schema format; `Dump.canonical_perm` proves that catalog order does not change the document, and equal schemas give byte-identical dumps.
+
+- status:: accepted
+- motivated_by:: [[decisions#Schema types at runtime and Lean inductives offline]] {weight: primary}
+- changed_by:: [[changes#add-ecosystem]]
+
+## Soufflé over the first-order stratified fragment
+
+The oracle translates a module only when every clause reached from its entry point is in the first-order, cut-free, stratified fragment; anything else is skipped with its reason and counted.
+
+Excluded: `pi`, `=>`, lambdas, lists, cuts, calls outside the module and the schema, edge-id constants and edge subjects.
+
+**Context.** Over finite ground facts, stratified Datalog negation and λProlog negation as failure agree on that fragment, so a comparison there is exact. **Consequences.** The oracle shares no code with Marien: its own parser reads the module, and the facts it gives Soufflé are computed from the generator's graph with the scanner's scope rule (listed nodes, their properties, edges whose restricted endpoints are listed), not taken from Marien's materialization, so a fault in the scanner shows too. Coverage is partial and visible: at size 6 over 200 seeds, 655 comparisons and 304 skipped targets, mostly the bounded `reach` helper. Rejected: a Cypher oracle, upstream OCaml ELPI.
+
+- status:: accepted
+- motivated_by:: [[decisions#Differential testing with an oracle]] {weight: primary}
+- motivated_by:: [[decisions#Partitioned validation]]
+- changed_by:: [[changes#add-ecosystem]]
+
+## Proof relations keep answer multiplicities
+
+Each clause of the entry point becomes one Soufflé relation per branch of its disjunctive normal form, over its answer columns and every variable of the branch; the harness projects and keeps duplicates.
+
+A `_` in a positive literal becomes a fresh variable, so two parallel edges are two proofs.
+
+**Context.** `elpi_validate` returns one row per solution, while Soufflé relations are sets. A tuple of a proof relation is one proof, so the projection is ELPI's answer multiset. **Consequences.** Module predicates called positively are unfolded; a recursive one is outside the fragment, since its number of derivations is not a Datalog relation. Under negation only existence matters: `not G` becomes an auxiliary relation over the variables bound before it, defined from the earlier literals and `G`, and module predicates there are set relations, recursive or not.
+
+- status:: accepted
+- motivated_by:: [[decisions#Soufflé over the first-order stratified fragment]] {weight: primary}
+- changed_by:: [[changes#add-ecosystem]]
+
+## Statements desugar in the transformer
+
+A custom statement becomes, in the transformer, the parse tree of its `CALL elpi_*` form with literal arguments; LadybugDB's own binder, planner and mapper run it. `CALL elpi_statement` runs it until the grammar routes statements.
+
+**Context.** A binder extension receives no binder or client context, so it cannot bind the `CALL` it would desugar to; the parse tree of the `CALL` needs nothing else. LadybugDB does not export `ParsedFunctionExpression`'s vtable, so the node is copied from LadybugDB's parse of `CALL <fn>()`. **Consequences.** No statement logic outside `Statement.desugar`; the source reaches `elpi_save` as a value, never re-escaped. `VALIDATE … MIN SEVERITY` needs module names, since `elpi_validate` has no all-modules form at a severity. Rejected: desugaring in a binder extension, and rewriting into `CALL` text, since LadybugDB does not rewrite a rewritten standalone call again.
+
+- status:: accepted
+- motivated_by:: [[decisions#CALL functions first]] {weight: primary}
+- motivated_by:: [[constraints#Only CREATE USER and CREATE ROLE reach extension parsers]]
+- motivated_by:: [[constraints#Extensions are C++ shared libraries]]
+- changed_by:: [[changes#add-ecosystem]]
+
+## The locality check rests on its theorem premise and two differential checks
+
+`locality_sound` is proved over the abstract semantics given its premise `closed`; that `Marien/Analysis/Locality.lean` establishes `closed` for the modules it accepts is tested, not proved.
+
+**Context.** The M3 stretch theorem `Locality.sound` would have to model the check's inlining of combinators, its scoped `findall` templates and its variable closure, a large proof for code the tests already exercise. **Consequences.** Two independent checks stand in for it: M3's partition-equivalence property (partitioned equals full scope in Marien, 1000 cases in CI) and the Soufflé oracle, which compares Marien's partitioned report with Soufflé at full scope on the modules the check accepts (`tests/oracle/souffle/run.sh`). The proof stays possible later; this closes the open item of M5.
+
+- status:: accepted
+- motivated_by:: [[decisions#Analysis soundness over an abstract Horn semantics]] {weight: primary}
+- motivated_by:: [[decisions#Soufflé over the first-order stratified fragment]]
+- motivated_by:: [[decisions#Proofs where practical]]
+- changed_by:: [[changes#add-ecosystem]]
+
+## The website's example runs in CI
+
+The tour on the website (`web/tour.html`) follows one know-your-customer graph (`examples/kyc/`), and every result it shows is quoted from `examples/kyc/expected.txt`, which CI compares with what the LadybugDB CLI prints.
+
+**Context.** A page of hand-written outputs drifts from the extension silently. **Consequences.** A change in Marien's output fails the build until `expected.txt` and the tour are updated together. KYC is the example domain because typed validation, cycle detection over ownership and beneficial-owner queries matter there, and its data is the kind that must stay in the database.
+
+- status:: accepted
+- motivated_by:: [[decisions#Landing page on the extension server]] {weight: primary}
+- motivated_by:: [[decisions#Differential testing with an oracle]] {note: "outputs are checked, not written by hand"}

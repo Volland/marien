@@ -1,0 +1,101 @@
+result
+Extension: <extension> has been loaded.
+result
+Table Person has been created.
+result
+Table Company has been created.
+result
+Table Account has been created.
+result
+Table ShareholderOf has been created.
+result
+Table Owns has been created.
+result
+Table Holds has been created.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+result
+ok
+name,version,warnings
+text
+"kind person type.
+:index (2)
+pred person o:person.
+type person int -> person.
+:index (2)
+pred person.name o:person, o:string.
+:index (2)
+pred person.country o:person, o:string.
+:index (2)
+pred person.pep o:person, o:bool.
+:index (2)
+pred person.kyc_verified o:person, o:int.
+type subj_person person -> subject."
+severity,code,subject_label,subject_pk
+error,circular-ownership,Company,11
+error,circular-ownership,Company,12
+error,unverified-ubo,Person,2
+warning,no-ubo,Company,14
+warning,pep-account,Account,DE89 3704 0044 0532 0130
+beneficial_owner
+Ana Petrova
+Marco Rossi
+sol,var,value
+0,N,"[""str"",""Lena Vogel""]"
+0,P,"[""app"",""person"",[[""int"",3]]]"
+1,N,"[""str"",""Tom Hale""]"
+1,P,"[""app"",""person"",[[""int"",4]]]"
+module,version,severity,code,message,subject_label,subject_pk
+kyc,1,error,unverified-ubo,unverified-ubo,Person,2
+kyc,1,error,circular-ownership,circular-ownership,Company,11
+kyc,1,error,circular-ownership,circular-ownership,Company,12
+Error: Runtime exception: elpi_save typo: typo:2:47: undeclared constant 'person.kyc_verifed'
+Error: Runtime exception: elpi_save typed: typed:2:76: "2025-01-01" has type string but is used with type int
+name,version,warnings
+kyc_people,1,[]
+
+module,code,subject_pk
+kyc_people,unverified-ubo,2
+table_name,key,value
+Owns,acyclic,true
+name,version,warnings
+m.generated
+"violation error ""cycle"" (subj_company X) :- acyclic_witness (edge_of owns) X.
+"
+code,subject_label,subject_pk
+cycle,Company,11
+cycle,Company,12
+result
+Property kyc_verified has been dropped from table Person.
+Error: Runtime exception: elpi_validate: module kyc: module kyc (the schema changed since the module was saved): kyc:6:7: undeclared constant 'person.kyc_verified'
+module,old_status,new_status,error
+kyc,stale,broken,kyc:6:7: undeclared constant 'person.kyc_verified'
+kyc_meta,stale,ok,""
+kyc_people,stale,broken,kyc_people:4:7: undeclared constant 'person.kyc_verified'
+m.name,m.version,m.status
+kyc,1,broken
+kyc_meta,1,ok
+kyc_people,1,broken

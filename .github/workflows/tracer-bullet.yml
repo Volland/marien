@@ -37,6 +37,12 @@ jobs:
           scripts/check-size.sh build/libmarien.lbug_extension
       - name: Integration tests
         run: tests/integration/run.sh
+      - name: Offline codegen on the dump LadybugDB wrote
+        run: tests/offline/run.sh
+      - name: The website's KYC tour prints what the site shows
+        run: examples/kyc/run.sh --check
+      - name: Extension from the prebuilt Lean archive, without a Lean toolchain
+        run: scripts/test-lean-archive.sh
       - name: Differential properties and the rejection measure
         run: tests/differential/run.sh 1000
       - name: Download from the extension-server layout and load
@@ -56,4 +62,22 @@ jobs:
       - name: Fetch pinned LadybugDB source
         run: git clone -q --depth 1 --branch "v$(cat scripts/ladybug-version)" https://github.com/LadybugDB/ladybug .deps/ladybug
       - name: Build, check and test in Docker
+        run: tests/linux/docker.sh
+
+  souffle-oracle:
+    # The Soufflé oracle on Linux (openspec differential-testing, Soufflé oracle): the Linux leg in
+    # its Ubuntu 24.04 container with MARIEN_ORACLE=1, which builds Soufflé 2.5 and runs the
+    # oracle's self-test and 200 random cases. A mismatch leaves its reproducer under
+    # tests/oracle/souffle/failures/ in the container's work tree; the log shows the difference.
+    runs-on: ubuntu-24.04-arm
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MARIEN_ORACLE: 1
+      ORACLE_CASES: 200
+      PROPERTY_CASES: 50
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch pinned LadybugDB source
+        run: git clone -q --depth 1 --branch "v$(cat scripts/ladybug-version)" https://github.com/LadybugDB/ladybug .deps/ladybug
+      - name: Build and run the oracle in Docker
         run: tests/linux/docker.sh

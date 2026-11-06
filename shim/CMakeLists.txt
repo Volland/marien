@@ -4,6 +4,9 @@
 # Lean, GMP and libuv hidden; libleancpp never linked).
 #
 #   cmake -S shim -B build/shim [-DLADYBUG_SRC=...] [-DLINK_MODE=strip|nostrip] && cmake --build build/shim
+#
+# With -DMARIEN_LEAN_ARCHIVE=<dir> (the output of scripts/build-lean-archive.sh) the Lean side is
+# the prebuilt marien::lean archive and no Lean toolchain is needed: only the C++ shim is compiled.
 cmake_minimum_required(VERSION 3.20)
 project(marien_extension C CXX)
 
@@ -24,6 +27,40 @@ if(NOT EXISTS "${LADYBUG_GEN}/src/include/common/system_config.h")
   message(FATAL_ERROR "${LADYBUG_GEN} is not a configured LadybugDB tree (system_config.h is generated)")
 endif()
 
+set(MARIEN_LEAN_ARCHIVE "" CACHE PATH "Prebuilt Lean side (scripts/build-lean-archive.sh); empty: build it with lake")
+set(SHIM_CXX extension.cpp catalog.cpp scan.cpp structure.cpp statements.cpp)
+set(SHIM_INCLUDES "${LADYBUG_SRC}/src/include;${LADYBUG_GEN}/src/include;${LADYBUG_SRC}/third_party/fastpfor;${LADYBUG_SRC}/third_party/alp/include;${LADYBUG_SRC}/third_party/antlr4_runtime/src")
+set(PINNED_VERSION "${LADYBUG_VERSION}" CACHE STRING "LadybugDB version the load check expects")
+
+if(MARIEN_LEAN_ARCHIVE)
+  find_package(marien_lean CONFIG REQUIRED PATHS "${MARIEN_LEAN_ARCHIVE}/lib/cmake/marien_lean" NO_DEFAULT_PATH)
+  add_library(marien_extension SHARED ${SHIM_CXX})
+  set_target_properties(marien_extension PROPERTIES
+    CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON
+    CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON
+    PREFIX "" SUFFIX "" OUTPUT_NAME "libmarien.lbug_extension")
+  target_compile_options(marien_extension PRIVATE -O2)
+  target_compile_definitions(marien_extension PRIVATE NDEBUG MARIEN_LADYBUG_VERSION="${PINNED_VERSION}")
+  target_include_directories(marien_extension PRIVATE ${SHIM_INCLUDES})
+  target_link_libraries(marien_extension PRIVATE marien::lean)
+  # as scripts/link-extension.sh: LadybugDB symbols resolve against the host, only init and name
+  # are exported
+  if(APPLE)
+    target_link_options(marien_extension PRIVATE -undefined dynamic_lookup
+      "-Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/exports.txt" -Wl,-dead_strip_dylibs
+      $<$<STREQUAL:${LINK_MODE},strip>:-Wl,-dead_strip>)
+    add_custom_command(TARGET marien_extension POST_BUILD
+      COMMAND strip -x "$<TARGET_FILE:marien_extension>"
+      COMMAND codesign -s - -f "$<TARGET_FILE:marien_extension>" VERBATIM)
+  else()
+    target_link_options(marien_extension PRIVATE "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports.map"
+      -Wl,--as-needed $<$<STREQUAL:${LINK_MODE},strip>:-Wl,--gc-sections>)
+    add_custom_command(TARGET marien_extension POST_BUILD
+      COMMAND strip --strip-unneeded "$<TARGET_FILE:marien_extension>" VERBATIM)
+  endif()
+  return()
+endif()
+
 execute_process(COMMAND lean --print-prefix OUTPUT_VARIABLE LEAN_PREFIX OUTPUT_STRIP_TRAILING_WHITESPACE)
 execute_process(COMMAND lake env printenv LEAN_PATH WORKING_DIRECTORY "${ROOT}"
   OUTPUT_VARIABLE LEAN_PATH OUTPUT_STRIP_TRAILING_WHITESPACE)
@@ -37,18 +74,17 @@ add_custom_target(lean_archives
   WORKING_DIRECTORY "${ROOT}"
   BYPRODUCTS "${MARIEN_A}" "${ELPI_A}")
 
-add_library(marien_objs OBJECT lean_bridge.c extension.cpp catalog.cpp scan.cpp structure.cpp)
+add_library(marien_objs OBJECT lean_bridge.c ${SHIM_CXX})
 set_target_properties(marien_objs PROPERTIES
   CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON
   C_VISIBILITY_PRESET hidden CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 target_compile_options(marien_objs PRIVATE -O2)
 # The version the load-time check compares with; PINNED_VERSION overrides it for the test that a
 # mismatched build is refused.
-set(PINNED_VERSION "${LADYBUG_VERSION}" CACHE STRING "LadybugDB version the load check expects")
 target_compile_definitions(marien_objs PRIVATE NDEBUG MARIEN_LADYBUG_VERSION="${PINNED_VERSION}")
 target_include_directories(marien_objs PRIVATE
   "$<$<COMPILE_LANGUAGE:C>:${LEAN_PREFIX}/include>"
-  "$<$<COMPILE_LANGUAGE:CXX>:${LADYBUG_SRC}/src/include;${LADYBUG_GEN}/src/include;${LADYBUG_SRC}/third_party/fastpfor;${LADYBUG_SRC}/third_party/alp/include>")
+  "$<$<COMPILE_LANGUAGE:CXX>:${SHIM_INCLUDES}>")
 
 set(EXTENSION "${CMAKE_BINARY_DIR}/libmarien.lbug_extension")
 add_custom_command(OUTPUT "${EXTENSION}"

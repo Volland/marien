@@ -44,13 +44,19 @@ const char *marien_bridge_init(void);
 /* How many times the runtime initializer actually ran (expected: 1). */
 int marien_bridge_init_runs(void);
 
-/* elpi_signature: flattened rows (kind, name, text); table "" for all tables. */
-marien_strings marien_bridge_signature(const char *catalog, const char *table);
+/* elpi_signature: flattened rows (kind, name, text); table "" for all tables; format "" or "elpi"
+   for the ELPI declarations, "json" for the one row (schema, "", canonical schema dump). */
+marien_strings marien_bridge_signature(const char *catalog, const char *table, const char *format);
 
 /* Statements for the rewrite of elpi_init, elpi_save, elpi_drop and elpi_import, and the rows of
  * elpi_export (name, version, source) flattened. `modules` is the JSON array of stored modules
  * {name, version, source, derived}. Arguments are NUL-terminated except where a length is given. */
 marien_strings marien_bridge_init_statements(void);
+
+/* A statement's CALL form (Marien/Statement.lean): ["none"] for text that is not a Marien
+   statement, else "call", function, "1" when it returns rows, its Cypher text, then each argument
+   as "s", value or "l", count, items. */
+marien_strings marien_bridge_statement(const char *text, size_t len);
 marien_strings marien_bridge_save(const char *catalog, const char *modules, const char *name,
                                   const char *source, size_t source_len);
 marien_strings marien_bridge_drop(const char *modules, const char *name);

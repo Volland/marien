@@ -1,14 +1,14 @@
 ## ADDED Requirements
 
 ### Requirement: Rule statements
-The extension SHALL register a statement extension through LadybugDB's Transformer, Binder, Planner and Mapper extension interfaces that accepts:
+The extension SHALL register a statement transformer with LadybugDB's transformer extensions that accepts:
 - `CREATE [OR REPLACE] RULES <name> AS $$<source>$$`
 - `DROP RULES <name>`
 - `CHECK RULES`
 - `VALIDATE [<name>, …] [MIN SEVERITY <severity>]`
 - `ANNOTATE <table> SET <key> = '<value>'`
 
-Statements SHALL be available after `LOAD marien` and SHALL produce a parse error, not a crash, on malformed input.
+Statements SHALL be available after `LOAD marien` wherever LadybugDB passes the statement text to extension transformers, and SHALL produce a parse error, not a crash, on malformed input. Text that is not one of these statements SHALL be left to LadybugDB and other extensions. LadybugDB 0.22.1 passes only `CREATE USER` and `CREATE ROLE` to extension transformers; until it routes these statements, `CALL elpi_statement('<statement>')` SHALL run a statement through the same parser and desugaring. `VALIDATE … MIN SEVERITY` SHALL require module names, since `elpi_validate` has no form for every module at a severity.
 
 #### Scenario: Create rules from a statement
 - **WHEN** `CREATE RULES org_rules AS $$pred n o:int. n 1.$$` runs
@@ -23,9 +23,8 @@ Each statement SHALL desugar to exactly one `CALL` form (`CREATE RULES` → `elp
 
 ```mermaid
 flowchart LR
-  P[Transformer: parse statement] --> B[Binder: desugar to CALL elpi_*]
-  B --> L[Planner: plan the table function]
-  L --> M[Mapper: physical operator of the CALL]
+  P[Transformer: parse and desugar the statement] --> T[parse tree of CALL elpi_*]
+  T --> B[LadybugDB's Binder, Planner and Mapper of the CALL]
 ```
 
 #### Scenario: VALIDATE equals elpi_validate

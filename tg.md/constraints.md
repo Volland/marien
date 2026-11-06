@@ -30,6 +30,8 @@ LadybugDB offers transformer, binder, planner, mapper and catalog extensions, bu
 - source:: LadybugDB `src/include/extension/`, checked 2026-10-31
 - constrains:: [[decisions#Lazy recheck by schema hash]]
 
+Proposed upstream as a listener called in the DDL's transaction: LadybugDB/ladybug#1518 (`docs/upstream/catalog-change-hook.md`, 2026-11-06).
+
 ## Table functions can rewrite into Cypher
 
 A standalone `CALL` may supply a `rewriteFunc` that turns its bind data into a Cypher statement, which is how an extension function can write without re-entering the database.
@@ -139,6 +141,24 @@ In LeanElpi a `type` declaration of a name already declared adds an overload, bu
 
 - source:: lean-elpi `Elpi/Core/Typecheck.lean:150-170` (`overloads`); probed with `Marien.Engine.compile`, 2026-10-31
 - constrains:: [[components#Signature generator]] {strength: must, note: "emit pred t before type t"}
+- constrains:: [[components#Offline codegen]] {strength: must, note: "derived type declarations come first, so the emitted program re-accumulates the runtime signature"}
+
+## Derived declarations come before accumulated units
+
+LeanElpi assembles a program from the `kind`/`type` declarations every `deriving Elpi` registered, then the units accumulated into it; a program cannot place its own declarations ahead of the derived ones.
+
+With a derived `type person int -> person`, an accumulated `pred person o:person.` replaces the constructor (see [[constraints#A pred declaration replaces a constant of the same name]]), so rules using `person 7` fail to typecheck.
+
+- source:: lean-elpi `Elpi/Lean/Commands.lean` (`assemble`) and `Elpi/Runtime/Dsl.lean` at the pinned commit; probed with a generated module, 2026-11-06
+- constrains:: [[components#Offline codegen]] {strength: must, note: "the emitted program accumulates the whole runtime signature, whose type declarations restore each overload"}
+- constrains:: [[decisions#The generated module accumulates the runtime signature]] {strength: must}
+
+## Importing resets initializer execution
+
+In Lean 4.35, `importModules` (and `processHeader`) clears the flag that `enableInitializersExecution` sets, so a second import in the same process fails with "`enableInitializersExecution` must be run before calling `importModules`".
+
+- source:: Lean 4.35 `Lean/ImportingFlag.lean` (`withImporting`) and `Lean/Compiler/InitAttr.lean`, 2026-11-06
+- constrains:: [[components#Offline codegen]] {strength: must, note: "the imported header environment is cached and reused for every module elaborated in one process"}
 
 ## Names starting with an underscore are variables
 
@@ -199,3 +219,23 @@ LadybugDB's parser refuses `table` as a property name (`CREATE NODE TABLE … (t
 
 - source:: LadybugDB 0.22.1 parser, checked in the CLI
 - constrains:: [[components#Module store]] {strength: must, note: "schema-reflection, Schema annotations: the column is table_name"}
+
+## Only CREATE USER and CREATE ROLE reach extension parsers
+
+LadybugDB parses every statement with its own ANTLR grammar first; its Transformer hands a parse tree to extension transformers only for `CREATE USER` and `CREATE ROLE`, and nothing rewrites query text before parsing.
+
+New statement syntax such as `CREATE RULES org AS $$…$$` is therefore a syntax error before any extension sees it; the Binder, Planner and Mapper hooks only receive statements that a transformer produced.
+
+- source:: LadybugDB v0.22.1 and `main` (2026-11-06): `src/parser/transformer.cpp` (`transformExtensionStatement`, called for `iC_CreateUser` and `iC_CreateRole` only), `src/antlr4/Cypher.g4` (`oC_Statement`), `src/main/client_context.cpp` (`parseQuery`)
+- constrains:: [[components#Statement extension]] {strength: must, note: "no route from new syntax to the extension hooks without a grammar change upstream (custom-statements, Rule statements)"}
+
+Proposed upstream as a text-level fallback for extension transformers, with the parse node classes exported: LadybugDB/ladybug#1519 (`docs/upstream/extension-statements.md`).
+
+## ld64 drops dead stripping when one object lacks subsections
+
+Apple's linker keeps `MH_SUBSECTIONS_VIA_SYMBOLS` in a partial link (`ld -r`) only when every input has it; GMP's assembly objects do not, and without the flag the final link cannot dead-strip.
+
+A private extern definition is also left out of an archive's table of contents, so an archive member whose symbols are all private extern is never pulled. Merging Marien's Lean side with GMP in one object made the extension 13.8 MB instead of 4 MB.
+
+- source:: `otool -hv` of partial links of the Lean archives with and without `libgmp.a`, Xcode ld64 on macOS 15, arm64, 2026-11-06
+- constrains:: [[components#Runtime bridge]] {strength: must, note: "the prebuilt archive is two objects on macOS: the Lean side with only marien_bridge_* global, and GMP/libuv with the functions it calls global"}

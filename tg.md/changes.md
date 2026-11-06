@@ -27,9 +27,12 @@ The engine side is lean-elpi change `add-host-api` (module `Elpi.Host`, with its
 
 M1: the whole stack end to end: shim, single runtime, catalog to signature, `elpi_save`, untyped `elpi_query`, full-scope materialization and fuel slicing.
 
-Implemented: the Lean layers with their five proofs (54 Lean tests), the C++ shim and bridge (`shim/`), and 33 integration tests against LadybugDB 0.22.1, in CI on macOS arm64 and Linux aarch64 (`tests/linux/run.sh`). Open: the pin to LeanElpi 0.4.2.
+Implemented: the Lean layers with their five proofs (54 Lean tests), the C++ shim and bridge (`shim/`), and 33 integration tests against LadybugDB 0.22.1, in CI on macOS arm64 and Linux aarch64 (`tests/linux/run.sh`). Archived with one task open: the pin to the LeanElpi 0.4.2 tag (Marien pins commit `91ea5ba`), tracked by [[changes#add-leanelpi-host-api]].
 
-- status:: proposed
+- status:: archived
+- date:: 2026-11-06
+
+Archived to `openspec/changes/archive/2026-11-06-add-tracer-bullet/`; its requirements live in `openspec/specs/` (`rule-execution`, `rule-storage`, `schema-encoding`).
 
 ## add-typed-validation
 
@@ -57,12 +60,17 @@ Archived to `openspec/changes/archive/2026-11-05-add-analysis-and-partitioning/`
 
 M4: schema reflection and annotations, staged rule generation, dynamic entry points and the `graph.std` combinator library.
 
-Implemented: schema reflection with annotations (`elpi_annotate`, `_elpi_annotation`), stage 1 meta-rules whose text is checked and analysed like source and stored in `_elpi_module.generated`, `graph.std` built into the extension, and locality that follows relation arguments into combinators; four proofs (`ofSchema_no_system`, `ofSchema_perm`, `generate_perm`, `heads_declared`), unit, property and integration tests. Open: the optional proof `Reference.closure_spec`.
+Implemented: schema reflection with annotations (`elpi_annotate`, `_elpi_annotation`), stage 1 meta-rules whose text is checked and analysed like source and stored in `_elpi_module.generated`, `graph.std` built into the extension, and locality that follows relation arguments into combinators; four proofs (`ofSchema_no_system`, `ofSchema_perm`, `generate_perm`, `heads_declared`), unit, property and integration tests. Archived with the optional proof `Reference.closure_spec` not done.
 
-- status:: proposed
+- status:: archived
+- date:: 2026-11-06
+
+Archived to `openspec/changes/archive/2026-11-06-add-higher-order-layer/`; its requirements live in `openspec/specs/` (`graph-std`, `rule-generation`, `schema-evolution`, `schema-reflection`).
 
 ## add-ecosystem
 
 M5: offline Lean codegen from the shared encoding, the Soufflé oracle, custom statements and the upstream proposals.
+
+In progress: the schema dump and `marien-codegen` with the agreement check and two proofs (`Dump.canonical_perm`, `LeanPrinter.derive_eq_elpi`); the Soufflé oracle (`tests/oracle/souffle/run.sh`); custom statements with two proofs (`desugar_total`, `source_roundtrip`), registered as a transformer and run through `CALL elpi_statement` until LadybugDB routes them; the prebuilt Lean archive (`scripts/build-lean-archive.sh`). Filed upstream: LadybugDB/ladybug#1518 (catalog-change hook) and #1519 (extension statements). Open: the Soufflé CI job's first run, the upstream answers, the `ladybugdb/extensions` proposal (drafted).
 
 - status:: proposed

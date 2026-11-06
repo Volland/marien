@@ -44,7 +44,23 @@ scripts/check-exports.sh "$L"
 scripts/check-size.sh "$L"
 echo "== integration"
 tests/integration/run.sh
+tests/offline/run.sh
 tests/differential/run.sh "${PROPERTY_CASES:-1000}"
+if [ "${MARIEN_ORACLE:-}" = 1 ]; then
+  # The Soufflé oracle (tests/oracle/souffle/run.sh). Soufflé publishes x86_64 packages only, so
+  # it is built from its 2.5 tag here; the oracle runs Soufflé's interpreter, no C++ per program.
+  echo "== Soufflé oracle"
+  if ! command -v souffle >/dev/null; then
+    apt-get install -y -qq bison flex libffi-dev libsqlite3-dev zlib1g-dev libncurses-dev >/dev/null
+    [ -d /work/souffle ] || git clone -q --depth 1 --branch 2.5 https://github.com/souffle-lang/souffle /work/souffle
+    cmake -S /work/souffle -B /work/souffle/build -DCMAKE_BUILD_TYPE=Release -DSOUFFLE_ENABLE_TESTING=OFF \
+      -DSOUFFLE_USE_OPENMP=OFF >/dev/null
+    cmake --build /work/souffle/build --parallel "$(nproc)" --target souffle >/dev/null
+    export SOUFFLE=/work/souffle/build/src/souffle
+  fi
+  tests/oracle/souffle/run.sh --self-test
+  tests/oracle/souffle/run.sh "${ORACLE_CASES:-200}"
+fi
 scripts/test-install.sh "$L"
 # hand the extension to the host when it mounted /out (tests/linux/docker.sh)
 if [ -d /out ] && [ -w /out ]; then cp "$L" /out/libmarien.lbug_extension; fi

@@ -414,69 +414,122 @@ theorem assignNames_injective {reserved : String → Bool} {p : Plan} {m : Origi
         exact this.resolve_left (fun h' => h' hab)
       · contradiction
 
-/-! ### Declarations -/
+/-! ### Declarations
 
-private def recordDecls (rs : List RecordDecl) : List String :=
-  rs.flatMap fun r =>
-    [s!"kind {r.ctor} type.",
-     s!"type {r.ctor} {String.join (r.fields.map (·.render ++ " -> "))}{r.ctor}."]
+The generator produces structured declarations; a `SignaturePrinter` renders them. The
+`ElpiPrinter` here writes the ELPI text the database loads; the `LeanPrinter` of the offline
+codegen (`Marien/Offline/Codegen.lean`) writes Lean inductives with `deriving Elpi` from the same
+declarations, so the encoding has one definition and two printers. -/
 
-/-- A generated predicate indexed by its node and edge arguments to `depths` (`_`: not
-indexed). A node is `person 7`, so the default first-argument index, which looks only at the
-constructor, would put every fact of a table in one bucket; depth 2 hashes the key too. -/
-def indexedPred (depths : List String) (decl : String) : String :=
-  s!":index ({" ".intercalate depths})\n{decl}"
+/-- The type of a constructor or predicate argument: a property value type, or a generated kind
+(node, edge, union endpoint, `subject`, `severity`). -/
+inductive ATy where
+  | val (t : ETy)
+  | kind (name : String)
+  deriving Repr, Inhabited, BEq
 
-def nodeDecls (n : NodePlan) : String :=
-  "\n".intercalate <|
-    [s!"kind {n.id} type."] ++ recordDecls n.records ++
-    [indexedPred ["2"] s!"pred {n.id} o:{n.id}.", s!"type {n.id} {n.keyTy.render} -> {n.id}."] ++
-    n.props.map (fun p => indexedPred ["2"] s!"pred {p.pred} o:{n.id}, o:{p.ty.render}.") ++
-    [s!"type {(Origin.subject n.name).ident} {n.id} -> subject."]
+/-- One declaration of the generated signature. -/
+inductive Decl where
+  /-- `kind k type.` -/
+  | kind (name : String)
+  /-- `type c₁, …, cₙ a₁ -> … -> k.`: constructors of the kind `result`. -/
+  | ctor (names : List String) (args : List ATy) (result : String)
+  /-- `pred p o:a₁, ….`, indexed to `index` when it is not empty (`_`: not indexed). -/
+  | pred (name : String) (args : List ATy) (index : List String)
+  deriving Repr, Inhabited, BEq
 
-def relDecls (nodeId : String → String) (r : RelPlan) : String :=
-  let ends : List String × String × String :=
+private def recordDecls (rs : List RecordDecl) : List Decl :=
+  rs.flatMap fun r => [.kind r.ctor, .ctor [r.ctor] (r.fields.map .val) r.ctor]
+
+def nodeDecls (n : NodePlan) : List Decl :=
+  [.kind n.id] ++ recordDecls n.records ++
+    [.pred n.id [.kind n.id] ["2"], .ctor [n.id] [.val n.keyTy] n.id] ++
+    n.props.map (fun p => .pred p.pred [.kind n.id, .val p.ty] ["2"]) ++
+    [.ctor [(Origin.subject n.name).ident] [.kind n.id] "subject"]
+
+def relDecls (nodeId : String → String) (r : RelPlan) : List Decl :=
+  let ends : List Decl × String × String :=
     if r.multi then
       let s := (Origin.endpoint r.name true).ident
       let d := (Origin.endpoint r.name false).ident
-      let ctors (src : Bool) (ts : List String) (k : String) :=
-        ts.map fun t => s!"type {(Origin.endpointCtor r.name src t).ident} {nodeId t} -> {k}."
-      ([s!"kind {s} type."] ++ ctors true r.srcTables s ++ [s!"kind {d} type."] ++ ctors false r.dstTables d,
-       s, d)
+      let ctors (src : Bool) (ts : List String) (k : String) : List Decl :=
+        ts.map fun t => .ctor [(Origin.endpointCtor r.name src t).ident] [.kind (nodeId t)] k
+      ([.kind s] ++ ctors true r.srcTables s ++ [.kind d] ++ ctors false r.dstTables d, s, d)
     else match r.pairs with
       | (a, b) :: _ => ([], nodeId a, nodeId b)
       | [] => ([], "", "")
   let (endDecls, src, dst) := ends
   -- a union endpoint wraps the node once more (`owns.src.person (person 7)`)
   let endDepth := if r.multi then "3" else "2"
-  "\n".intercalate <|
-    [s!"kind {r.id} type."] ++ endDecls ++ recordDecls r.records ++
-    [indexedPred [endDepth, "2", endDepth] s!"pred {r.id} o:{src}, o:{r.id}, o:{dst}.",
-     s!"type {r.id} int -> {r.id}."] ++
-    r.props.map (fun p => indexedPred ["2"] s!"pred {p.pred} o:{r.id}, o:{p.ty.render}.") ++
-    [s!"type {(Origin.subject r.name).ident} {r.id} -> subject."] ++
+  [.kind r.id] ++ endDecls ++ recordDecls r.records ++
+    [.pred r.id [.kind src, .kind r.id, .kind dst] [endDepth, "2", endDepth],
+     .ctor [r.id] [.val .int] r.id] ++
+    r.props.map (fun p => .pred p.pred [.kind r.id, .val p.ty] ["2"]) ++
+    [.ctor [(Origin.subject r.name).ident] [.kind r.id] "subject"] ++
     (match r.selfKind? with
      | some k =>
-       [indexedPred ["2"] s!"pred {(Origin.structural r.name true).ident} o:{nodeId k}.",
-        indexedPred ["2"] s!"pred {(Origin.structural r.name false).ident} o:{nodeId k}, o:int."]
+       [.pred (Origin.structural r.name true).ident [.kind (nodeId k)] ["2"],
+        .pred (Origin.structural r.name false).ident [.kind (nodeId k), .val .int] ["2"]]
      | none => [])
 
 /-- The validation protocol's declarations, at the head of every signature. -/
 -- @tg: implements:: [[openspec:validation#Violation protocol]] {confidence: partial, note: "the prepended severity and subject kinds"}
-def protocolDecls : String :=
-  "kind severity type.\ntype error, warning, info severity.\nkind subject type."
+def protocolItems : List Decl :=
+  [.kind "severity", .ctor ["error", "warning", "info"] [] "severity", .kind "subject"]
 
-/-- A generated signature: declarations per table, in catalog order, and warnings. -/
+/-- A generated signature: structured declarations per table, in catalog order, and warnings. -/
 structure Signature where
   plan : Plan
   /-- Catalog name and declarations of each encoded table, node tables first. -/
-  tables : List (String × String)
+  decls : List (String × List Decl)
   warnings : List String
   deriving Inhabited
 
+/-- A rendering of a generated signature. -/
+structure SignaturePrinter where
+  /-- What it renders to, for messages (`elpi`, `lean`). -/
+  name : String
+  print : Signature → String
+
+namespace ElpiPrinter
+
+def aty : ATy → String
+  | .val t => t.render
+  | .kind k => k
+
+/-- A generated predicate indexed by its node and edge arguments to `depths` (`_`: not
+indexed). A node is `person 7`, so the default first-argument index, which looks only at the
+constructor, would put every fact of a table in one bucket; depth 2 hashes the key too. -/
+def decl : Decl → String
+  | .kind k => s!"kind {k} type."
+  | .ctor cs args k => s!"type {", ".intercalate cs} {String.join (args.map (aty · ++ " -> "))}{k}."
+  | .pred p args index =>
+    let d := s!"pred {p} {", ".intercalate (args.map ("o:" ++ aty ·))}."
+    if index.isEmpty then d else s!":index ({" ".intercalate index})\n{d}"
+
+def decls (ds : List Decl) : String := "\n".intercalate (ds.map decl)
+
+end ElpiPrinter
+
+/-- The validation protocol's declarations as ELPI text. -/
+def protocolDecls : String := ElpiPrinter.decls protocolItems
+
 namespace Signature
 
+/-- The ELPI declarations of each encoded table, by catalog name. -/
+def tables (s : Signature) : List (String × String) := s.decls.map fun (n, ds) => (n, ElpiPrinter.decls ds)
+
+/-- Every declaration, the protocol's first. -/
+def allDecls (s : Signature) : List Decl := protocolItems ++ s.decls.flatMap (·.2)
+
 def text (s : Signature) : String := "\n".intercalate (protocolDecls :: s.tables.map (·.2)) ++ "\n"
+
+end Signature
+
+/-- The printer of the in-database signature, which LeanElpi loads and typechecks rules against. -/
+def ElpiPrinter : SignaturePrinter := ⟨"elpi", Signature.text⟩
+
+namespace Signature
 
 /-- The table a generated identifier belongs to (kind, constructor, predicate, record or
 subject constructor); `none` for any other name. -/
@@ -505,7 +558,7 @@ def ofSchema (reserved : String → Bool) (s : Schema) : Except NameError Signat
   let _ ← assignNames reserved p
   let nodeId (t : String) : String := (Origin.node t).ident
   return { plan := p
-           tables := p.nodes.map (fun n => (n.name, nodeDecls n)) ++
+           decls := p.nodes.map (fun n => (n.name, nodeDecls n)) ++
              p.rels.map (fun r => (r.name, relDecls nodeId r))
            warnings := Encoding.warnings s }
 

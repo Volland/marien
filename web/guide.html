@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Marien guide</title>
+<meta name="description" content="How to use Marien: load the extension, read the schema as types, save and run rule modules, validate, scope and partition runs, graph.std, generated rules, schema changes, statements and options.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<div class="band">
+  <div class="wrap">
+    <nav class="top">
+      <a class="brand" href="./"><img src="favicon.svg" alt="">Marien</a>
+      <div class="links">
+        <a href="./" class="wide">Home</a>
+        <a href="tour.html">Tour</a>
+        <a href="guide.html" aria-current="page">Guide</a>
+        <a href="https://github.com/Volland/marien" class="wide">GitHub</a>
+        <a href="./#download" class="pill">Download</a>
+      </div>
+    </nav>
+    <header class="page-hero">
+      <p class="eyebrow">GUIDE · MARIEN __VERSION__ · LADYBUGDB __LBUG__</p>
+      <h1>Using <em>Marien</em></h1>
+      <p>Everything Marien adds to LadybugDB: the types your schema becomes, how modules are saved and run, validation, scopes and partitions, the graph library, generated rules, schema changes and the options that bound a run. The <a href="tour.html">tour</a> shows them on one example.</p>
+    </header>
+  </div>
+</div>
+
+<main class="wrap">
+  <div class="guide">
+    <nav class="toc" aria-label="Contents">
+      <ol>
+        <li><a href="#install">Install</a></li>
+        <li><a href="#types">Schema as types</a></li>
+        <li><a href="#modules">Modules</a></li>
+        <li><a href="#run">Running rules</a></li>
+        <li><a href="#validate">Validation</a></li>
+        <li><a href="#scale">Scopes and partitions</a></li>
+        <li><a href="#std">graph.std</a></li>
+        <li><a href="#meta">Generated rules</a></li>
+        <li><a href="#evolve">Schema changes</a></li>
+        <li><a href="#statements">Statements</a></li>
+        <li><a href="#options">Options and limits</a></li>
+        <li><a href="#codegen">Lean types offline</a></li>
+      </ol>
+    </nav>
+
+    <article class="doc">
+      <h2 id="install">Install</h2>
+      <p>Download the zip for your platform from the <a href="./#download">download section</a>, unzip it, and load the file by path. A build only loads into the LadybugDB release it was built for; any other release refuses it at <code>LOAD</code>.</p>
+<pre><span class="k">LOAD EXTENSION</span> <span class="s">'/path/to/libmarien.lbug_extension'</span>;
+<span class="k">CALL</span> elpi_init();</pre>
+      <p><code>elpi_init</code> creates Marien's system tables once per database: <code>_elpi_module</code> (one row per saved module), <code>_elpi_accumulates</code> (dependencies between modules) and <code>_elpi_annotation</code>. Calling it again changes nothing. Tables whose names start with <code>_elpi_</code> are invisible to rules.</p>
+
+      <h2 id="types">Your schema as types</h2>
+      <p>Marien reads the catalog in your transaction and generates an ELPI signature from it. You never write it; rules are typechecked against it when you save them.</p>
+      <div class="ref-wrap"><table class="ref">
+        <tr><th>In the schema</th><th>In your rules</th></tr>
+        <tr><td><code>Person(id INT64 PRIMARY KEY, …)</code></td><td>a kind <code>person</code>; <code>person 7</code> is the node with key 7; <code>person P</code> enumerates every node</td></tr>
+        <tr><td>property <code>Person.name</code></td><td><code>person.name P N</code>; a NULL value has no fact</td></tr>
+        <tr><td><code>Knows(FROM Person TO Person, since INT64)</code></td><td><code>knows A E B</code>, with <code>E</code> an edge term of kind <code>knows</code>; <code>knows.since E Y</code></td></tr>
+        <tr><td>a rel table with several FROM/TO pairs</td><td>endpoints wrapped by pair: <code>holds (holds.src.person P) E (holds.dst.account A)</code></td></tr>
+        <tr><td>a rel table over one node table</td><td>also <code>in_cycle.knows P</code> and <code>component.knows P N</code>, computed from the graph</td></tr>
+        <tr><td>every table</td><td>a constructor of the <code>subject</code> kind: <code>subj_person P</code></td></tr>
+      </table></div>
+      <p>Names are lower snake case (<code>ShareholderOf</code> becomes <code>shareholder_of</code>). If two catalog names would map to the same identifier, or to an ELPI keyword, the save fails and asks you to rename one. Edge terms carry internal ids that are stable only inside one call.</p>
+      <div class="ref-wrap"><table class="ref">
+        <tr><th>LadybugDB type</th><th>ELPI type</th></tr>
+        <tr><td><code>INT8</code> … <code>INT128</code>, <code>UINT*</code>, <code>SERIAL</code></td><td><code>int</code>, unbounded</td></tr>
+        <tr><td><code>FLOAT</code>, <code>DOUBLE</code></td><td><code>float</code></td></tr>
+        <tr><td><code>STRING</code></td><td><code>string</code></td></tr>
+        <tr><td><code>BOOL</code></td><td><code>bool</code>, the constants <code>tt</code> and <code>ff</code></td></tr>
+        <tr><td><code>DATE</code>, <code>TIMESTAMP</code></td><td><code>int</code>: days, or microseconds, since 1970-01-01 UTC</td></tr>
+        <tr><td><code>T[]</code></td><td><code>list T</code></td></tr>
+        <tr><td><code>STRUCT(…)</code></td><td>a generated record kind, <code>person.addr.rec</code>, with one constructor</td></tr>
+        <tr><td>anything else (<code>MAP</code>, …)</td><td>left out, with a warning from <code>elpi_signature</code></td></tr>
+      </table></div>
+<pre><span class="k">CALL</span> elpi_signature() <span class="k">RETURN</span> kind, name, text;            <span class="c">// the whole signature and its warnings</span>
+<span class="k">CALL</span> elpi_signature(<span class="s">'Person'</span>) <span class="k">RETURN</span> text;               <span class="c">// one table</span>
+<span class="k">CALL</span> elpi_signature(format := <span class="s">'json'</span>) <span class="k">RETURN</span> text;      <span class="c">// the canonical schema dump</span></pre>
+
+      <h2 id="modules">Modules</h2>
+      <p>A module is ELPI source stored in <code>_elpi_module</code>, byte for byte. Saving it again creates a new version. A save typechecks the module against the signature, runs the analyses and stores their verdicts; anything that fails is refused and nothing is stored.</p>
+<pre><span class="k">CALL</span> elpi_save(<span class="s">'org'</span>, <span class="s">'pred manager_of i:person, o:person.
+manager_of P M :- reports_to P _ M.'</span>);
+<span class="k">CALL</span> elpi_drop(<span class="s">'org'</span>);                           <span class="c">// refused while another module accumulates it</span>
+<span class="k">CALL</span> elpi_export() <span class="k">RETURN</span> name, version, source;   <span class="c">// dependencies first</span>
+<span class="k">CALL</span> elpi_import(<span class="s">'[{"name": "org", "source": "…"}]'</span>);   <span class="c">// all or nothing</span></pre>
+      <ul>
+        <li><code>accumulate other.</code> includes another saved module (or <code>graph.std</code>); cycles are refused, and a module cannot be dropped while others accumulate it.</li>
+        <li>Sources inside a Cypher string escape <code>'</code> and <code>\</code> with a backslash; the store keeps exactly the text Cypher reads.</li>
+        <li><code>MATCH (m:_elpi_module) RETURN m.name, m.version, m.status</code> lists modules; <code>status</code> is <code>ok</code>, <code>stale</code> or <code>broken</code> (see <a href="#evolve">schema changes</a>).</li>
+      </ul>
+
+      <h2 id="run">Running rules</h2>
+      <h3>Typed entry points: <code>elpi_run</code></h3>
+      <p>A predicate declared with modes is an entry point. <code>i:</code> arguments come from a map of parameters named <code>in1</code>, <code>in2</code>, …; each <code>o:</code> argument becomes a column <code>out1</code>, <code>out2</code>, … whose type is fixed at bind time. A node comes back as its primary key, so it joins straight into a <code>MATCH</code>.</p>
+<pre><span class="k">CALL</span> elpi_run(<span class="s">'kyc'</span>, <span class="s">'ubo_of'</span>, {in1: <span class="n">12</span>})
+<span class="k">WITH DISTINCT</span> out2 <span class="k">MATCH</span> (p:Person {id: out2}) <span class="k">RETURN</span> p.name;</pre>
+      <p>A missing, extra or ill-typed parameter fails the bind and names it. Every argument of a call must be a literal: LadybugDB does not pass query parameters to table functions.</p>
+      <h3>Any goal: <code>elpi_query</code></h3>
+      <p>For writing and debugging rules: one row per solution and variable, with the binding as a JSON term, and <code>exhausted</code> telling whether the search finished.</p>
+<pre><span class="k">CALL</span> elpi_query(<span class="s">'kyc'</span>, <span class="s">'shareholder_of P _ (company 13), person.name P N'</span>)
+<span class="k">RETURN</span> sol, var, value, exhausted;</pre>
+      <p class="note">A call loads only the tables its entry point can reach, into a fresh store, inside your transaction: it sees your own uncommitted writes and nothing else. Calls are read-only.</p>
+
+      <h2 id="validate">Validation</h2>
+      <p>A module takes part in validation when it declares exactly</p>
+<pre><span class="k">pred</span> violation o:severity, o:string, o:subject.            <span class="c">% severity: error, warning or info</span>
+<span class="k">pred</span> violation_message i:string, i:subject, o:string.    <span class="c">% optional; the code is the message otherwise</span></pre>
+      <p><code>elpi_validate</code> runs every listed module (or all of them) and returns one row per solution: <code>module</code>, <code>version</code>, <code>severity</code>, <code>code</code>, <code>message</code>, <code>subject_label</code> (the subject's table) and <code>subject_pk</code>. A module that fails fails the call; a report is never partial.</p>
+<pre><span class="k">CALL</span> elpi_validate() <span class="k">RETURN</span> *;                                     <span class="c">// every module</span>
+<span class="k">CALL</span> elpi_validate([<span class="s">'kyc'</span>, <span class="s">'hr'</span>]) <span class="k">RETURN</span> *;                         <span class="c">// some modules</span>
+<span class="k">CALL</span> elpi_validate([<span class="s">'kyc'</span>], <span class="s">'warning'</span>) <span class="k">RETURN</span> *;                   <span class="c">// warning and error</span>
+<span class="k">CALL</span> elpi_validate([<span class="s">'hr'</span>], <span class="s">'error'</span>, {Person: [<span class="n">1</span>, <span class="n">2</span>]}) <span class="k">RETURN</span> *;    <span class="c">// a narrowed scope, monotone modules only</span></pre>
+
+      <h2 id="scale">Scopes and partitions</h2>
+      <h3>Narrowed scope</h3>
+      <p>Pass a map from node tables to key lists to load only those nodes, their properties and the edges between listed endpoints; tables absent from the map load in full. Marien accepts a scope only for an entry point its analysis found <em>monotone</em> (no negation or cut over the database), because only then can a smaller graph give no wrong answer, only fewer. Narrowed rows carry <code>narrowed = true</code>.</p>
+<pre><span class="k">CALL</span> elpi_run(<span class="s">'org'</span>, <span class="s">'colleague'</span>, {in1: <span class="n">7</span>}, {Person: [<span class="n">7</span>, <span class="n">8</span>, <span class="n">9</span>]}) <span class="k">RETURN</span> *;</pre>
+      <h3>Anchor partitions</h3>
+      <p>For rules that look a bounded distance from their subject. Declare the subject's kind and the radius; the save fails unless the locality check proves every atom a rule reads lies within that radius. Validation then runs batch by batch, each batch with its neighbourhood in a fresh store, and every subject lands in exactly one batch.</p>
+<pre><span class="c">% @marien partition violation by person radius 1</span></pre>
+      <h3>Key partitions</h3>
+      <p>For rules that compare rows sharing a value, such as uniqueness: rows are bucketed by a hash of the property, and each bucket is solved alone. Rows whose value is NULL form no bucket.</p>
+<pre><span class="c">% @marien partition violation by person.email</span></pre>
+      <p><code>CALL elpi_partition_batch=10000</code> sets the anchors per batch, and the rows per bucket.</p>
+
+      <h2 id="std">graph.std</h2>
+      <p>A library of combinators over relations, built into the extension: <code>accumulate graph.std.</code> A relation is a rel table's predicate (<code>owns</code>), or its projection without the edge term (<code>edge_of owns</code>).</p>
+      <div class="ref-wrap"><table class="ref">
+        <tr><th>Combinator</th><th>Succeeds</th></tr>
+        <tr><td><code>edge_of R X Y</code></td><td>when <code>R</code> has an edge from <code>X</code> to <code>Y</code></td></tr>
+        <tr><td><code>closure R X Y</code></td><td>for the transitive closure; terminates on cycles</td></tr>
+        <tr><td><code>symmetric_witness R X Y</code></td><td>for a pair related one way but not the other</td></tr>
+        <tr><td><code>functional_witness R X Y1 Y2</code></td><td>for two distinct targets from one source</td></tr>
+        <tr><td><code>acyclic R</code></td><td>when <code>R</code> has no cycle</td></tr>
+        <tr><td><code>acyclic_witness R X</code></td><td>once for each <code>X</code> on a cycle (searches; not local)</td></tr>
+        <tr><td><code>acyclic_witness_in C X</code></td><td>the same, from the precomputed <code>in_cycle.&lt;rel&gt;</code>; local, so it partitions</td></tr>
+        <tr><td><code>card R X Min Max</code></td><td>when <code>X</code> has between <code>Min</code> and <code>Max</code> targets (<code>-1</code>: unbounded)</td></tr>
+        <tr><td><code>card_witness Nodes R Min Max X N</code></td><td>for each node of <code>Nodes</code> (such as <code>person</code>) outside the bounds, with its count</td></tr>
+      </table></div>
+<pre>violation error <span class="s">"no-manager"</span> (subj_person X) :-
+  card_witness person (edge_of has_manager) <span class="n">1</span> <span class="n">1</span> X _.</pre>
+
+      <h2 id="meta">Generated rules</h2>
+      <p>Annotate tables with your own keys, then let meta-rules read the schema and the annotations to write clauses. An empty value removes an annotation.</p>
+<pre><span class="k">CALL</span> elpi_annotate(<span class="s">'Owns'</span>, <span class="s">'acyclic'</span>, <span class="s">'true'</span>);</pre>
+      <p>Meta-rules sit between <code>% @marien meta</code> and <code>% @marien end</code> and define <code>pred generate o:string.</code> Each solution is a piece of clause text. They see the schema as facts: <code>schema.node T</code>, <code>schema.rel R From To</code>, <code>schema.prop T Column Type</code>, <code>schema.key T Column</code>, <code>schema.ident T Ident</code>, <code>schema.prop_ident T Column Ident</code> and <code>schema.annot T Key Value</code>, and no data.</p>
+<pre><span class="c">% @marien meta</span>
+<span class="k">pred</span> generate o:string.
+generate S :- schema.annot T <span class="s">"acyclic"</span> <span class="s">"true"</span>, schema.ident T R,
+  schema.rel T K _, schema.ident K N,
+  S <span class="k">is</span> <span class="s">"violation error \"cycle\" (subj_"</span> ^ N ^ <span class="s">" X) :- acyclic_witness (edge_of "</span> ^ R ^ <span class="s">") X."</span>.
+<span class="c">% @marien end</span></pre>
+      <p>Generation runs at save and whenever the schema or an annotation the module reaches changes. Its text is typechecked and analysed like source, stored in <code>_elpi_module.generated</code>, and bounded by fuel and <code>elpi_max_generated_bytes</code>, never by a clock, so the same schema always generates the same rules.</p>
+
+      <h2 id="evolve">Schema changes</h2>
+      <p>Each module stores a hash of the tables it reaches. LadybugDB has no hook for extensions to hear about DDL, so Marien checks lazily: a run whose hash differs recompiles the module first, and if it no longer typechecks the run fails with the error and its position. DDL on tables a module does not reach changes nothing for it.</p>
+<pre><span class="k">CALL</span> elpi_recheck();                    <span class="c">// every module: old_status, new_status, error</span>
+<span class="k">CALL</span> elpi_recheck([<span class="s">'kyc'</span>]);             <span class="c">// some modules</span></pre>
+      <p><code>elpi_recheck</code> writes the result: <code>ok</code> again, or <code>broken</code> with the error, in one statement for all the modules it checks.</p>
+
+      <h2 id="statements">Statements</h2>
+      <p>Each statement is syntax for one <code>CALL</code>, with the same columns, rows, errors and stored state. The rule source goes between dollar quotes and is stored byte for byte; use <code>$tag$…$tag$</code> when it contains <code>$$</code>.</p>
+      <div class="ref-wrap"><table class="ref">
+        <tr><th>Statement</th><th>Same as</th></tr>
+        <tr><td><code>CREATE [OR REPLACE] RULES org AS $$…$$</code></td><td><code>elpi_save('org', '…')</code></td></tr>
+        <tr><td><code>DROP RULES org</code></td><td><code>elpi_drop('org')</code></td></tr>
+        <tr><td><code>CHECK RULES</code></td><td><code>elpi_recheck()</code></td></tr>
+        <tr><td><code>VALIDATE [org, hr] [MIN SEVERITY warning]</code></td><td><code>elpi_validate(['org', 'hr'], 'warning')</code></td></tr>
+        <tr><td><code>ANNOTATE Owns SET acyclic = 'true'</code></td><td><code>elpi_annotate('Owns', 'acyclic', 'true')</code></td></tr>
+      </table></div>
+      <p class="note"><strong>For now, through <code>elpi_statement</code>.</strong> LadybugDB __LBUG__ passes only <code>CREATE USER</code> and <code>CREATE ROLE</code> to extension parsers, so write <code>CALL elpi_statement('VALIDATE kyc MIN SEVERITY warning')</code>. Marien registers its statement parser already; the plain syntax works once LadybugDB routes it (<a href="https://github.com/LadybugDB/ladybug/issues/1519">ladybug#1519</a>). <code>MIN SEVERITY</code> needs module names.</p>
+
+      <h2 id="options">Options and limits</h2>
+      <p>Set with <code>CALL &lt;option&gt;=&lt;value&gt;</code> for the connection. A limit that is reached ends the call with an error naming it, never with a partial result; only <code>elpi_max_solutions</code> stops early, and says so.</p>
+      <div class="ref-wrap"><table class="ref">
+        <tr><th>Option</th><th>Default</th><th>Bounds</th></tr>
+        <tr><td><code>elpi_fuel</code></td><td>100000000</td><td>resolution steps per call</td></tr>
+        <tr><td><code>elpi_timeout_ms</code></td><td>0</td><td>wall time per call; 0 is no deadline</td></tr>
+        <tr><td><code>elpi_max_solutions</code></td><td>100000</td><td>solutions per call; more stop the search with <code>exhausted = false</code></td></tr>
+        <tr><td><code>elpi_max_facts</code></td><td>10000000</td><td>facts loaded per call</td></tr>
+        <tr><td><code>elpi_slice_steps</code></td><td>100000</td><td>steps between checks for interrupts and deadlines</td></tr>
+        <tr><td><code>elpi_cache_size</code></td><td>64</td><td>compiled modules kept in memory</td></tr>
+        <tr><td><code>elpi_partition_batch</code></td><td>10000</td><td>anchors per batch; rows per key bucket</td></tr>
+        <tr><td><code>elpi_max_generated_bytes</code></td><td>1000000</td><td>text meta-rules may generate per module</td></tr>
+      </table></div>
+
+      <h2 id="codegen">Lean types offline</h2>
+      <p>To prove things about your rules in Lean, generate Lean types from the same encoding. Dump the schema, then run the tool from a checkout of Marien:</p>
+<pre><span class="k">CALL</span> elpi_signature(format := <span class="s">'json'</span>) <span class="k">RETURN</span> text;   <span class="c">// save the text as schema.json</span>
+
+$ lake exe marien-codegen schema.json -o Schema.lean</pre>
+      <p>The module has one <code>inductive … deriving Elpi</code> per kind and a program <code>Schema.signature</code> holding the runtime signature, so stored rules load against it unchanged. The tool elaborates the module and checks that the types <code>deriving Elpi</code> declares equal the ones the database uses; any difference fails it, naming the kind and constructor.</p>
+    </article>
+  </div>
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <span><img src="favicon.svg" alt="">Marien __VERSION__ · built on <a href="https://github.com/Volland/lean-elpi">LeanElpi</a> and <a href="https://github.com/LadybugDB/ladybug">LadybugDB</a></span>
+    <span><a href="./">Home</a> · <a href="tour.html">Tour</a> · <a href="https://github.com/Volland/marien">GitHub</a></span>
+  </div>
+</footer>
+</body>
+</html>

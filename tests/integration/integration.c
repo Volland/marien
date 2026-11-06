@@ -1457,6 +1457,185 @@ static int precomputed_cycles_agree(void) {
     return 1;
 }
 
+/* --- offline-codegen ------------------------------------------------------------------ */
+
+#define DUMP_Q "CALL elpi_signature(format := 'json') RETURN text"
+
+/* @tg: verifies:: [[openspec:offline-codegen#Schema dump#Dump of a small schema]] {level: integration} */
+static int dump_small_schema(void) {
+    const char *ddl[] = {"CREATE NODE TABLE Person(id INT64 PRIMARY KEY, name STRING)",
+                         "CREATE REL TABLE ReportsTo(FROM Person TO Person, since INT64)"};
+    Db d;
+    CHECK(db_with(&d, "dump_small", ddl, 2, "pred x o:person.\nx X :- person X."), "setup: %s", last_error);
+    const char *r = OK(&d, DUMP_Q);
+    const char *want =
+        "{\"annotations\":[],\"format\":\"marien.schema/1\","
+        "\"nodes\":[{\"key\":\"id\",\"name\":\"Person\",\"properties\":"
+        "[{\"name\":\"id\",\"type\":\"INT64\"},{\"name\":\"name\",\"type\":\"STRING\"}]}],"
+        "\"rels\":[{\"name\":\"ReportsTo\",\"pairs\":[[\"Person\",\"Person\"]],\"properties\":"
+        "[{\"name\":\"since\",\"type\":\"INT64\"}]}]}\n";
+    CHECK(strcmp(r, want) == 0, "dump:\n%s", r);
+    r = OK(&d, "CALL elpi_signature(format := 'json') RETURN kind, name");
+    CHECK(strcmp(r, "schema|\n") == 0, "one schema row: %s", r);
+    const char *e = fails(&d, "CALL elpi_signature(format := 'yaml') RETURN *");
+    CHECK(e && strstr(e, "unknown format"), "unknown format: %s", e ? e : "(accepted)");
+    e = fails(&d, "CALL elpi_signature(style := 'json') RETURN *");
+    CHECK(e && strstr(e, "unknown option"), "unknown option: %s", e ? e : "(accepted)");
+    close_db(&d);
+    return 1;
+}
+
+/* Two databases with the same tables created in different orders. The dump of the richer one is
+   kept in the scratch directory for the codegen check (tests/offline/run.sh). */
+/* @tg: verifies:: [[openspec:offline-codegen#Schema dump#Dump is canonical]] {level: integration} */
+static int dump_is_canonical(void) {
+    const char *a[] = {
+        "CREATE NODE TABLE Person(id INT64 PRIMARY KEY, name STRING, tags STRING[], "
+        "addr STRUCT(city STRING, zip INT32), born DATE)",
+        "CREATE NODE TABLE Org(code STRING PRIMARY KEY, active BOOL)",
+        "CREATE REL TABLE ReportsTo(FROM Person TO Person, since INT64)",
+        "CREATE REL TABLE Owns(FROM Person TO Org, FROM Org TO Org, share DOUBLE)",
+    };
+    const char *b[] = {
+        "CREATE NODE TABLE Org(code STRING PRIMARY KEY, active BOOL)",
+        "CREATE NODE TABLE Person(id INT64 PRIMARY KEY, born DATE, addr STRUCT(city STRING, zip INT32), "
+        "tags STRING[], name STRING)",
+        "CREATE REL TABLE Owns(FROM Org TO Org, FROM Person TO Org, share DOUBLE)",
+        "CREATE REL TABLE ReportsTo(FROM Person TO Person, since INT64)",
+    };
+    Db d1, d2;
+    const char *m = "pred x o:person.\nx X :- person X.";
+    CHECK(db_with(&d1, "dump1", a, 4, m), "db 1: %s", last_error);
+    CHECK(db_with(&d2, "dump2", b, 4, m), "db 2: %s", last_error);
+    CHECK(ok(&d1, "CALL elpi_annotate('ReportsTo', 'acyclic', 'true')") &&
+              ok(&d2, "CALL elpi_annotate('ReportsTo', 'acyclic', 'true')"),
+          "annotate: %s", last_error);
+    char first[8192];
+    snprintf(first, sizeof first, "%s", OK(&d1, DUMP_Q));
+    const char *r = OK(&d2, DUMP_Q);
+    CHECK(strcmp(first, r) == 0, "byte-identical dumps:\n%s\nvs\n%s", first, r);
+    CHECK(!strstr(first, "_elpi"), "no system tables: %s", first);
+    char path[1200];
+    snprintf(path, sizeof path, "%s/dump-rich.json", scratch);
+    FILE *f = fopen(path, "w");
+    CHECK(f, "cannot write %s", path);
+    fputs(first, f);
+    fclose(f);
+    close_db(&d1);
+    close_db(&d2);
+    return 1;
+}
+
+/* --- custom-statements: through CALL elpi_statement until LadybugDB routes the syntax ---- */
+
+/* Run statement text through elpi_statement; NULL on error (last_error set). */
+static const char *statement(Db *d, const char *text) {
+    static char esc[16384];
+    cypher_escape(text, esc, sizeof esc);
+    return ok(d, "CALL elpi_statement('%s')", esc);
+}
+
+#define MODULE_ROW "MATCH (m:_elpi_module {name: '%s'}) RETURN m.name, m.version, m.source, m.status, m.schema_hash"
+
+/* @tg: verifies:: [[openspec:custom-statements#Rule statements#Create rules from a statement]] {level: integration} */
+static int create_rules_statement(void) {
+    ORG(d);
+    Db e;
+    CHECK(org(&e, "create_rules_call"), "setup: %s", last_error);
+    CHECK(statement(&d, "CREATE RULES org_rules AS $$pred n o:int. n 1.$$"), "statement: %s", last_error);
+    OK(&e, "CALL elpi_save('org_rules', 'pred n o:int. n 1.')");
+    char a[4096];
+    snprintf(a, sizeof a, "%s", OK(&d, MODULE_ROW, "org_rules"));
+    const char *b = OK(&e, MODULE_ROW, "org_rules");
+    CHECK(strcmp(a, b) == 0 && strstr(a, "org_rules|1|pred n o:int. n 1.|ok|"), "stored the same:\n%s\n%s", a, b);
+    CHECK(statement(&d, "CREATE OR REPLACE RULES org_rules AS $$pred n o:int. n 2.$$"), "replace: %s", last_error);
+    CHECK(strstr(OK(&d, MODULE_ROW, "org_rules"), "org_rules|2|"), "a new version");
+    CHECK(statement(&d, "DROP RULES org_rules"), "drop: %s", last_error);
+    CHECK(strcmp(OK(&d, "MATCH (m:_elpi_module) RETURN count(m)"), "0\n") == 0, "dropped");
+    CHECK(statement(&d, "CHECK RULES"), "check rules: %s", last_error);
+    CHECK(statement(&d, "ANNOTATE Knows SET acyclic = 'true'"), "annotate: %s", last_error);
+    CHECK(strcmp(OK(&d, "MATCH (a:_elpi_annotation) RETURN a.table_name, a.key, a.value"), "Knows|acyclic|true\n") == 0,
+          "annotation stored");
+    close_db(&d);
+    close_db(&e);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:custom-statements#Rule statements#Malformed statement]] {level: integration} */
+static int malformed_statement(void) {
+    ORG(d);
+    const char *e = statement(&d, "CREATE RULES AS $$x$$") ? NULL : last_error;
+    CHECK(e && strstr(e, "missing module name"), "names the missing module name: %s", e ? e : "(accepted)");
+    e = statement(&d, "CREATE USER alice") ? NULL : last_error;
+    CHECK(e && strstr(e, "not a Marien statement"), "other syntax: %s", e ? e : "(accepted)");
+    /* CREATE USER reaches the registered statement transformer, which leaves it to LadybugDB */
+    e = fails(&d, "CREATE USER alice");
+    CHECK(e && strstr(e, "Failed parse the statement"), "CREATE USER is not Marien's: %s", e ? e : "(accepted)");
+    /* the database is still usable */
+    OK(&d, "CALL elpi_save('m', 'pred n o:int. n 1.')");
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:custom-statements#Statements equal their CALL forms#VALIDATE equals elpi_validate]] {level: integration} */
+static int validate_statement(void) {
+    ORG(d);
+    OK(&d, "CALL elpi_save('org_rules', 'pred violation o:severity, o:string, o:subject.\n"
+           "violation warning \"unnamed\" (subj_person P) :- person P, not (person.name P _).\n"
+           "violation error \"loner\" (subj_person P) :- person P, not (knows P _ _).')");
+    char a[4096];
+    snprintf(a, sizeof a, "%s", OK(&d, "CALL elpi_validate(['org_rules'], 'warning') RETURN *"));
+    const char *b = statement(&d, "VALIDATE org_rules MIN SEVERITY warning");
+    CHECK(b, "statement: %s", last_error);
+    CHECK(strcmp(a, b) == 0 && count_lines(a) == 2, "same rows:\n%s\nvs\n%s", a, b);
+    snprintf(a, sizeof a, "%s", OK(&d, "CALL elpi_validate() RETURN *"));
+    b = statement(&d, "VALIDATE");
+    CHECK(b && strcmp(a, b) == 0, "every module:\n%s\nvs\n%s", a, b ? b : last_error);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:custom-statements#Statements equal their CALL forms#Errors are identical]] {level: integration} */
+static int statement_errors(void) {
+    ORG(d);
+    char a[4096];
+    CHECK(!ok(&d, "CALL elpi_save('bad', 'pred p o:int. p \"x\".')"), "the CALL form fails");
+    snprintf(a, sizeof a, "%s", last_error);
+    char *in = strstr(a, "\n  in: ");
+    if (in) *in = 0;
+    CHECK(!statement(&d, "CREATE RULES bad AS $$pred p o:int. p \"x\".$$"), "the statement fails");
+    in = strstr(last_error, "\n  in: ");
+    if (in) *in = 0;
+    CHECK(strcmp(a, last_error) == 0 && strstr(a, "string"), "the same error:\n%s\nvs\n%s", a, last_error);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:custom-statements#Statement source is not re-escaped#Quotes and backslashes survive]] {level: integration} */
+static int statement_bytes(void) {
+    ORG(d);
+    const char *src = "pred s o:string.\ns \"a\\\"b\". % 'c' \\ $x";
+    char text[4096];
+    snprintf(text, sizeof text, "CREATE RULES q AS $$%s$$", src);
+    CHECK(statement(&d, text), "statement: %s", last_error);
+    char want[4096];
+    snprintf(want, sizeof want, "%s\n", src);
+    const char *r = OK(&d, "MATCH (m:_elpi_module {name: 'q'}) RETURN m.source");
+    CHECK(strcmp(r, want) == 0, "byte for byte:\n%s\nvs\n%s", r, want);
+    close_db(&d);
+    return 1;
+}
+
+/* @tg: verifies:: [[openspec:custom-statements#Statement source is not re-escaped#Tagged delimiter]] {level: integration} */
+static int tagged_delimiter(void) {
+    ORG(d);
+    CHECK(statement(&d, "CREATE RULES q AS $r$pred m o:string. m \"$$\".$r$"), "statement: %s", last_error);
+    const char *r = OK(&d, "MATCH (m:_elpi_module {name: 'q'}) RETURN m.source");
+    CHECK(strcmp(r, "pred m o:string. m \"$$\".\n") == 0, "source: %s", r);
+    close_db(&d);
+    return 1;
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) {
         fprintf(stderr, "usage: integration <extension> <scratch-dir> [filter]\n");
@@ -1500,6 +1679,10 @@ int main(int argc, char **argv) {
         {"generated catalog order", generated_catalog_order}, {"export omits generated", export_omits_generated},
         {"card partition equals full", card_partition_equals_full},
         {"precomputed cycles agree", precomputed_cycles_agree},
+        {"dump small schema", dump_small_schema}, {"dump is canonical", dump_is_canonical},
+        {"create rules statement", create_rules_statement}, {"malformed statement", malformed_statement},
+        {"validate statement", validate_statement}, {"statement errors", statement_errors},
+        {"statement bytes", statement_bytes}, {"tagged delimiter", tagged_delimiter},
     };
     int run = 0;
     for (size_t i = 0; i < sizeof tests / sizeof *tests; i++) {

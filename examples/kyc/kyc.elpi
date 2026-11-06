@@ -1,0 +1,27 @@
+accumulate graph.std.
+
+pred violation o:severity, o:string, o:subject.
+
+% A shareholder with 25% or more whose KYC check was never completed.
+violation error "unverified-ubo" (subj_person P) :-
+  shareholder_of P E _, shareholder_of.share E S, S >= 25.0,
+  not (person.kyc_verified P _).
+
+% Companies that own each other in a circle hide who controls them.
+violation error "circular-ownership" (subj_company C) :-
+  acyclic_witness_in in_cycle.owns C.
+
+% Every company needs at least one person behind it.
+violation warning "no-ubo" (subj_company C) :-
+  company C, not (ultimate_owner _ C).
+
+% Accounts of politically exposed persons need enhanced due diligence.
+violation warning "pep-account" (subj_account A) :-
+  holds (holds.src.person P) _ (holds.dst.account A), person.pep P tt.
+
+pred ultimate_owner o:person, o:company.
+ultimate_owner P C :- shareholder_of P _ C.
+ultimate_owner P C :- shareholder_of P _ D, closure (edge_of owns) D C.
+
+pred ubo_of i:company, o:person.
+ubo_of C P :- ultimate_owner P C.

@@ -26,6 +26,7 @@
 #include "catalog/catalog.h"
 #include "common/exception/interrupt.h"
 #include "common/exception/runtime.h"
+#include "common/string_utils.h"
 #include "common/types/date_t.h"
 #include "common/types/int128_t.h"
 #include "common/types/timestamp_t.h"
@@ -179,19 +180,20 @@ struct ElpiInit {
 
 struct ElpiSave {
     static constexpr const char* name = "ELPI_SAVE";
+    static std::unique_ptr<TableFuncBindData> bind(const ClientContext* c, const std::string& module,
+        const std::string& source) {
+        auto& ctx = const_cast<ClientContext&>(*c);
+        auto stored = storedModulesJson(ctx);
+        auto catalog = catalogJson(ctx);
+        return std::make_unique<StatementsBindData>(takeStrings(
+            marien_bridge_save(catalog.c_str(), stored.c_str(), module.c_str(), source.data(), source.size()),
+            "elpi_save " + module));
+    }
     static function_set getFunctionSet() {
         function_set set;
         set.push_back(writeFunction(name, {LogicalTypeID::STRING, LogicalTypeID::STRING},
             [](const ClientContext* c, const TableFuncBindInput* in) {
-                auto& ctx = const_cast<ClientContext&>(*c);
-                auto module = literal(in, 0, "elpi_save");
-                auto source = literal(in, 1, "elpi_save");
-                auto stored = storedModulesJson(ctx);
-                auto catalog = catalogJson(ctx);
-                return std::make_unique<StatementsBindData>(takeStrings(
-                    marien_bridge_save(catalog.c_str(), stored.c_str(), module.c_str(), source.data(),
-                        source.size()),
-                    "elpi_save " + module));
+                return bind(c, literal(in, 0, "elpi_save"), literal(in, 1, "elpi_save"));
             }));
         return set;
     }
@@ -200,22 +202,24 @@ struct ElpiSave {
 // @tg: implements:: [[openspec:schema-reflection#Schema annotations]]
 struct ElpiAnnotate {
     static constexpr const char* name = "ELPI_ANNOTATE";
+    static std::unique_ptr<TableFuncBindData> bind(const ClientContext* c, const std::string& table,
+        const std::string& key, const std::string& value) {
+        auto& ctx = const_cast<ClientContext&>(*c);
+        auto tx = lbug::transaction::Transaction::Get(ctx);
+        if (!lbug::catalog::Catalog::Get(ctx)->containsTable(tx, "_elpi_annotation")) {
+            throw RuntimeException("elpi_annotate: the annotation table does not exist; run CALL elpi_init() first");
+        }
+        auto catalog = catalogJson(ctx);
+        return std::make_unique<StatementsBindData>(takeStrings(
+            marien_bridge_annotate(catalog.c_str(), table.c_str(), key.c_str(), value.c_str()),
+            "elpi_annotate " + table));
+    }
     static function_set getFunctionSet() {
         function_set set;
         set.push_back(writeFunction(name, {LogicalTypeID::STRING, LogicalTypeID::STRING, LogicalTypeID::STRING},
             [](const ClientContext* c, const TableFuncBindInput* in) {
-                auto& ctx = const_cast<ClientContext&>(*c);
-                auto table = literal(in, 0, "elpi_annotate");
-                auto key = literal(in, 1, "elpi_annotate");
-                auto value = literal(in, 2, "elpi_annotate");
-                auto tx = lbug::transaction::Transaction::Get(ctx);
-                if (!lbug::catalog::Catalog::Get(ctx)->containsTable(tx, "_elpi_annotation")) {
-                    throw RuntimeException("elpi_annotate: the annotation table does not exist; run CALL elpi_init() first");
-                }
-                auto catalog = catalogJson(ctx);
-                return std::make_unique<StatementsBindData>(takeStrings(
-                    marien_bridge_annotate(catalog.c_str(), table.c_str(), key.c_str(), value.c_str()),
-                    "elpi_annotate " + table));
+                return bind(c, literal(in, 0, "elpi_annotate"), literal(in, 1, "elpi_annotate"),
+                    literal(in, 2, "elpi_annotate"));
             }));
         return set;
     }
@@ -223,16 +227,16 @@ struct ElpiAnnotate {
 
 struct ElpiDrop {
     static constexpr const char* name = "ELPI_DROP";
+    static std::unique_ptr<TableFuncBindData> bind(const ClientContext* c, const std::string& module) {
+        auto& ctx = const_cast<ClientContext&>(*c);
+        auto stored = storedModulesJson(ctx);
+        return std::make_unique<StatementsBindData>(takeStrings(
+            marien_bridge_drop(stored.c_str(), module.c_str()), "elpi_drop " + module));
+    }
     static function_set getFunctionSet() {
         function_set set;
         set.push_back(writeFunction(name, {LogicalTypeID::STRING},
-            [](const ClientContext* c, const TableFuncBindInput* in) {
-                auto& ctx = const_cast<ClientContext&>(*c);
-                auto module = literal(in, 0, "elpi_drop");
-                auto stored = storedModulesJson(ctx);
-                return std::make_unique<StatementsBindData>(takeStrings(
-                    marien_bridge_drop(stored.c_str(), module.c_str()), "elpi_drop " + module));
-            }));
+            [](const ClientContext* c, const TableFuncBindInput* in) { return bind(c, literal(in, 0, "elpi_drop")); }));
         return set;
     }
 };
@@ -276,6 +280,35 @@ struct ElpiRecheck {
         set.push_back(writeFunction(name, {LogicalTypeID::ANY}, [](const ClientContext* c, const TableFuncBindInput* in) {
             return bind(c, stringList(in, 0, "elpi_recheck"), false);
         }));
+        return set;
+    }
+};
+
+/* --- elpi_statement ------------------------------------------------------------------ */
+
+// `CALL elpi_statement('<statement>')`: a custom statement (Marien/Statement.lean) through the bind
+// of its CALL form, until LadybugDB routes the statement syntax to extensions. A write statement
+// binds exactly as its function does; VALIDATE rewrites into its `CALL elpi_validate(...) RETURN *`.
+// @tg: implements:: [[openspec:custom-statements#Statements equal their CALL forms]] {note: "elpi_statement dispatches to the bind of the CALL form"}
+struct ElpiStatement {
+    static constexpr const char* name = "ELPI_STATEMENT";
+    static std::unique_ptr<TableFuncBindData> bind(const ClientContext* c, const std::string& text) {
+        auto d = desugarStatement(text);
+        if (!d) throw RuntimeException("elpi_statement: not a Marien statement (CREATE RULES, DROP RULES, CHECK RULES, VALIDATE, ANNOTATE)");
+        auto arg = [&](size_t i) -> const std::string& { return d->args.at(i).value; };
+        if (d->rows) return std::make_unique<StatementsBindData>(std::vector<std::string>{d->cypher});
+        if (d->fn == "elpi_save") return ElpiSave::bind(c, arg(0), arg(1));
+        if (d->fn == "elpi_drop") return ElpiDrop::bind(c, arg(0));
+        if (d->fn == "elpi_recheck") return ElpiRecheck::bind(c, {}, true);
+        if (d->fn == "elpi_annotate") return ElpiAnnotate::bind(c, arg(0), arg(1), arg(2));
+        throw RuntimeException("elpi_statement: no CALL form " + d->fn);
+    }
+    static function_set getFunctionSet() {
+        function_set set;
+        set.push_back(writeFunction(name, {LogicalTypeID::STRING},
+            [](const ClientContext* c, const TableFuncBindInput* in) {
+                return bind(c, literal(in, 0, "elpi_statement"));
+            }));
         return set;
     }
 };
@@ -344,11 +377,32 @@ struct ElpiExport {
     }
 };
 
+// The `format := '...'` option of elpi_signature; "" when it is not given. Any other named
+// option is an error rather than ignored.
+std::string signatureFormat(const TableFuncBindInput* in) {
+    std::string format;
+    for (auto& [key, value] : in->optionalParams) {
+        if (StringUtils::getLower(key) != "format") {
+            throw RuntimeException("elpi_signature: unknown option '" + key + "'; the only option is format");
+        }
+        if (value.isNull() || value.getDataType().getLogicalTypeID() != LogicalTypeID::STRING) {
+            throw RuntimeException("elpi_signature: format must be a string literal, 'elpi' or 'json'");
+        }
+        format = value.getValue<std::string>();
+    }
+    if (in->optionalParamsLegacy.size() != in->optionalParams.size()) {
+        throw RuntimeException("elpi_signature: format must be a string literal, 'elpi' or 'json'");
+    }
+    return format;
+}
+
 std::unique_ptr<TableFuncBindData> signatureBind(const ClientContext* c, const TableFuncBindInput* in,
     const std::string& table) {
     auto& ctx = const_cast<ClientContext&>(*c);
     auto catalog = catalogJson(ctx);
-    auto cells = takeStrings(marien_bridge_signature(catalog.c_str(), table.c_str()), "elpi_signature");
+    auto format = signatureFormat(in);
+    auto cells = takeStrings(marien_bridge_signature(catalog.c_str(), table.c_str(), format.c_str()),
+        "elpi_signature");
     std::vector<LogicalType> types;
     types.push_back(LogicalType::STRING());
     types.push_back(LogicalType::STRING());
@@ -358,6 +412,7 @@ std::unique_ptr<TableFuncBindData> signatureBind(const ClientContext* c, const T
 }
 
 // @tg: implements:: [[openspec:schema-encoding#Signature inspection]]
+// @tg: implements:: [[openspec:offline-codegen#Schema dump]]
 struct ElpiSignature {
     static constexpr const char* name = "ELPI_SIGNATURE";
     static function_set getFunctionSet() {
@@ -1158,6 +1213,8 @@ __attribute__((visibility("default"))) void init(ClientContext* context) {
     ExtensionUtils::addTableFunc<marien::ElpiQuery>(db);
     ExtensionUtils::addTableFunc<marien::ElpiRun>(db);
     ExtensionUtils::addTableFunc<marien::ElpiValidate>(db);
+    ExtensionUtils::addStandaloneTableFunc<marien::ElpiStatement>(db);
+    marien::registerStatements(db);
 }
 
 __attribute__((visibility("default"))) const char* name() {

@@ -17,8 +17,9 @@ extern lean_object *lean_io_error_to_string(lean_object *err);
 extern lean_object *initialize_marien_Marien(uint8_t builtin);
 
 /* Marien/Ffi.lean; every argument is owned. */
-extern lean_object *marien_signature(lean_object *, lean_object *);
+extern lean_object *marien_signature(lean_object *, lean_object *, lean_object *);
 extern lean_object *marien_init_statements(lean_object *);
+extern lean_object *marien_statement(lean_object *);
 extern lean_object *marien_save(lean_object *, lean_object *, lean_object *, lean_object *);
 extern lean_object *marien_drop(lean_object *, lean_object *);
 extern lean_object *marien_annotate(lean_object *, lean_object *, lean_object *, lean_object *);
@@ -176,9 +177,14 @@ void marien_bridge_free_strings(marien_strings *s) {
 
 /* --- Signature and module store ------------------------------------------------------ */
 
-marien_strings marien_bridge_signature(const char *catalog, const char *table) {
+marien_strings marien_bridge_signature(const char *catalog, const char *table, const char *format) {
     ensure_thread();
-    return take_strings(marien_signature(mk_str(catalog), mk_str(table)));
+    return take_strings(marien_signature(mk_str(catalog), mk_str(table), mk_str(format)));
+}
+
+marien_strings marien_bridge_statement(const char *text, size_t len) {
+    ensure_thread();
+    return take_strings(marien_statement(mk_str_n(text, len)));
 }
 
 marien_strings marien_bridge_init_statements(void) {

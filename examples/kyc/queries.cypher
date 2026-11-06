@@ -1,0 +1,18 @@
+CALL elpi_signature('Person') RETURN text;
+CALL elpi_validate(['kyc']) RETURN severity, code, subject_label, subject_pk ORDER BY severity, code, subject_pk;
+CALL elpi_run('kyc', 'ubo_of', {in1: 12}) WITH DISTINCT out2 MATCH (p:Person {id: out2}) RETURN p.name AS beneficial_owner ORDER BY beneficial_owner;
+CALL elpi_query('kyc', 'shareholder_of P _ (company 13), person.name P N') RETURN sol, var, value ORDER BY sol, var;
+CALL elpi_statement('VALIDATE kyc MIN SEVERITY error');
+CALL elpi_save('typo', 'pred violation o:severity, o:string, o:subject.\nviolation error "stale-kyc" (subj_person P) :- person.kyc_verifed P D, D < 20000.');
+CALL elpi_save('typed', 'pred violation o:severity, o:string, o:subject.\nviolation error "stale-kyc" (subj_person P) :- person.kyc_verified P D, D < "2025-01-01".');
+CALL elpi_save('kyc_people', 'pred violation o:severity, o:string, o:subject.\nviolation error "unverified-ubo" (subj_person P) :-\n  shareholder_of P E _, shareholder_of.share E S, S >= 25.0,\n  not (person.kyc_verified P _).\n% @marien partition violation by person radius 1');
+CALL elpi_partition_batch=2;
+CALL elpi_validate(['kyc_people']) RETURN module, code, subject_pk;
+CALL elpi_annotate('Owns', 'acyclic', 'true');
+CALL elpi_save('kyc_meta', 'accumulate graph.std.\npred violation o:severity, o:string, o:subject.\n% @marien meta\npred generate o:string.\ngenerate S :- schema.annot T "acyclic" "true", schema.ident T R, schema.rel T K _, schema.ident K N,\n  S is "violation error \\"cycle\\" (subj_" ^ N ^ " X) :- acyclic_witness (edge_of " ^ R ^ ") X.".\n% @marien end');
+MATCH (m:_elpi_module {name: 'kyc_meta'}) RETURN m.generated;
+CALL elpi_validate(['kyc_meta']) RETURN code, subject_label, subject_pk ORDER BY subject_pk;
+ALTER TABLE Person DROP kyc_verified;
+CALL elpi_validate(['kyc']) RETURN code;
+CALL elpi_recheck();
+MATCH (m:_elpi_module) RETURN m.name, m.version, m.status ORDER BY m.name;

@@ -1,4 +1,6 @@
 import Marien.Exec.Run
+import Marien.Encoding.Dump
+import Marien.Statement
 
 /-!
 # Runtime bridge: the C entry points
@@ -45,12 +47,21 @@ private def limits (catalog : String) : Meta.Stage.Limits :=
 
 /-! ### Signature -/
 
-/-- `elpi_signature([table])`: rows `(kind, name, text)`, flattened; kind is `protocol` (the
-validation protocol's declarations, with no table named), `table` or `warning`. -/
+/-- `elpi_signature([table], [format := 'elpi'])`: rows `(kind, name, text)`, flattened; kind is
+`protocol` (the validation protocol's declarations, with no table named), `table` or `warning`.
+With `format := 'json'` the one row `(schema, '', dump)` holds the canonical schema dump that
+`marien-codegen` reads. -/
 -- @tg: implements:: [[openspec:schema-encoding#Signature inspection]]
 -- @tg: implements:: [[openspec:schema-encoding#Schema model from the catalog]]
+-- @tg: implements:: [[openspec:offline-codegen#Schema dump]]
 @[export marien_signature]
-def signature (catalog table : String) : Except String (Array String) := do
+def signature (catalog table format : String) : Except String (Array String) := do
+  match format.toLower with
+  | "" | "elpi" => pure ()
+  | "json" =>
+    unless table.isEmpty do throw "elpi_signature: format 'json' dumps the whole schema and takes no table"
+    return #["schema", "", Dump.ofSchema (← schema catalog)]
+  | f => throw s!"elpi_signature: unknown format '{f}'; expected 'elpi' or 'json'"
   let sig ← (Signature.ofSchema (Engine.reservedNames.contains ·) (← schema catalog)).mapError toString
   let tables := sig.tables.filter fun (n, _) => table.isEmpty || n == table
   if !table.isEmpty && tables.isEmpty then throw s!"no encoded table named {table}"
@@ -60,6 +71,21 @@ def signature (catalog table : String) : Except String (Array String) := do
   return (proto ++ tables.flatMap (fun (n, t) => ["table", n, t]) ++ ws.flatMap (["warning", "", ·])).toArray
 
 /-! ### Module store -/
+
+/-! ### Statements -/
+
+/-- A statement's `CALL` form: `#["none"]` when the text is not a Marien statement, otherwise
+`call`, the function, `1` when it returns rows, its Cypher text, then each argument as `s, value`
+or `l, count, items…`. A malformed Marien statement is an error. -/
+@[export marien_statement]
+def statementC (text : String) : Except String (Array String) := do
+  if !Statement.isMarien text then return #["none"]
+  let s ← (Statement.parse text).mapError (s!"statement: {·}")
+  let c := Statement.desugar s
+  let args := c.args.flatMap fun
+    | .str v => ["s", v]
+    | .strs xs => ["l", toString xs.length] ++ xs
+  return #["call", c.fn, if c.rows then "1" else "0", c.cypher] ++ args.toArray
 
 @[export marien_init_statements]
 def initStatements (_ : Unit) : Array String := Store.initStatements.toArray

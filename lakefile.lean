@@ -17,16 +17,24 @@ require «lean-elpi» from git "https://github.com/Volland/lean-elpi" @ "91ea5ba
 /-- The test suites the test driver runs. -/
 lean_lib Tests where
   srcDir := "tests"
-  roots := #[`EngineContract, `M1, `M2, `M3, `M4, `GraphStd.Reference, `GraphStd.Tests, `Property.Gen, `Property.Model, `Property.Tests]
+  roots := #[`EngineContract, `M1, `M2, `M3, `M4, `M5, `GraphStd.Reference, `GraphStd.Tests, `Property.Gen, `Property.Model, `Property.Tests, `SouffleOracle.Translate, `SouffleOracle.Tests]
 
 /-- `lake test`: the engine contract (one check per `engine-host-api` scenario, against the pinned
 LeanElpi) and the M1 unit tests of the Lean layers. -/
 @[test_driver] lean_exe «marien-tests» where
   root := `Main
   srcDir := "tests"
+  supportInterpreter := true
 
 /-- The workloads of the differential properties (`tests/property/run.sh`) and the rejection
 measure. -/
 lean_exe «marien-gen» where
   root := `Property.Main
   srcDir := "tests"
+
+/-- `lake exe marien-codegen <dump.json> -o <Module.lean>`: Lean inductives with `deriving Elpi`
+for a schema dump, checked against the runtime signature (`Marien/Offline/`). Not part of the
+extension's archive: `Marien.lean` does not import it. -/
+lean_exe «marien-codegen» where
+  root := `Marien.Offline.Main
+  supportInterpreter := true

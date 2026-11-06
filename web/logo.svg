@@ -1,32 +1,51 @@
-<!-- Marien: a ladybug (Marienkäfer) whose wing seam is a λ and whose spots are term trees. -->
+<!-- Marien: a ladybug (Marienkäfer). The left wing case carries a λ, the right one a logical term,
+     the tree of f(a, b), whose nodes are the ladybug's spots. Orange, black and white. -->
 <svg role="img" aria-label="Marien" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <defs>
-    <filter id="sticker" x="-10%" y="-10%" width="120%" height="120%">
-      <feMorphology in="SourceAlpha" operator="dilate" radius="9" result="grown"/>
-      <feFlood flood-color="#fbf7f2"/>
+    <filter id="sticker" x="-12%" y="-12%" width="124%" height="124%">
+      <feMorphology in="SourceAlpha" operator="dilate" radius="10" result="grown"/>
+      <feFlood flood-color="#ffffff"/>
       <feComposite in2="grown" operator="in" result="edge"/>
       <feMerge><feMergeNode in="edge"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
   </defs>
   <g filter="url(#sticker)">
-  <g stroke="#1b1a1f" stroke-linecap="round" fill="none" stroke-width="16">
-    <path d="M214 104 Q196 64 166 52"/><path d="M298 104 Q316 64 346 52"/>
-    <path d="M110 236 L68 212"/><path d="M92 318 L46 322"/><path d="M116 398 L76 436"/>
-    <path d="M402 236 L444 212"/><path d="M420 318 L466 322"/><path d="M396 398 L436 436"/>
-  </g>
-  <circle cx="166" cy="52" r="14" fill="#1b1a1f"/><circle cx="346" cy="52" r="14" fill="#1b1a1f"/>
-  <ellipse cx="256" cy="146" rx="80" ry="62" fill="#1b1a1f"/>
-  <circle cx="224" cy="126" r="10" fill="#fff"/><circle cx="288" cy="126" r="10" fill="#fff"/>
-  <circle cx="256" cy="304" r="172" fill="#d7263d"/>
-  <g stroke="#8e1426" stroke-width="7" stroke-linecap="round" fill="none">
-    <path d="M168 238 L146 342"/><path d="M168 238 L214 300"/>
-    <path d="M354 232 L384 332"/><path d="M354 232 L336 410"/>
-  </g>
-  <g fill="#1b1a1f">
-    <circle cx="168" cy="238" r="27"/><circle cx="146" cy="342" r="22"/><circle cx="214" cy="300" r="15"/>
-    <circle cx="354" cy="232" r="27"/><circle cx="384" cy="332" r="23"/><circle cx="336" cy="410" r="18"/>
-  </g>
-  <path d="M206 146 C234 128 258 136 266 182 L306 466" stroke="#1b1a1f" stroke-width="24" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-  <path d="M282 290 L198 456" stroke="#1b1a1f" stroke-width="24" stroke-linecap="round" fill="none"/>
+    <!-- antennae and legs -->
+    <g stroke="#111111" stroke-linecap="round" stroke-linejoin="round" fill="none" stroke-width="14">
+      <path d="M228 92 C216 62 198 44 170 38"/><path d="M284 92 C296 62 314 44 342 38"/>
+      <path d="M104 236 L60 210"/><path d="M88 322 L40 322"/><path d="M110 406 L68 444"/>
+      <path d="M408 236 L452 210"/><path d="M424 322 L472 322"/><path d="M402 406 L444 444"/>
+    </g>
+    <circle cx="170" cy="38" r="13" fill="#111111"/><circle cx="342" cy="38" r="13" fill="#111111"/>
+    <!-- the wing cases -->
+    <circle cx="256" cy="320" r="168" fill="#ff6a13"/>
+    <circle cx="256" cy="320" r="163" fill="none" stroke="#d24a00" stroke-width="10"/>
+    <path d="M404 262 A150 150 0 0 0 366 206" stroke="#ffffff" stroke-width="13" stroke-linecap="round" fill="none" opacity="0.5"/>
+    <path d="M256 190 L256 486" stroke="#111111" stroke-width="12" stroke-linecap="round"/>
+    <!-- left: λ -->
+    <g stroke="#111111" stroke-width="28" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      <path d="M132 250 C152 236 168 244 178 266 L226 404"/>
+      <path d="M188 314 L134 406"/>
+    </g>
+    <!-- right: the term f(a, b) -->
+    <g stroke="#111111" stroke-width="11" stroke-linecap="round" fill="none">
+      <path d="M340 264 L300 362"/><path d="M340 264 L384 362"/>
+    </g>
+    <g fill="#111111">
+      <circle cx="340" cy="262" r="28"/>
+      <circle cx="300" cy="366" r="23"/>
+      <circle cx="384" cy="366" r="23"/>
+    </g>
+    <g fill="#ffffff" font-family="IBM Plex Mono, ui-monospace, monospace" font-weight="700" text-anchor="middle">
+      <text x="340" y="271" font-size="26">f</text>
+      <text x="300" y="374" font-size="22">a</text>
+      <text x="384" y="374" font-size="22">b</text>
+    </g>
+    <!-- head and pronotum over the wing cases, with the white patches of a real ladybug -->
+    <ellipse cx="256" cy="110" rx="56" ry="38" fill="#111111"/>
+    <circle cx="234" cy="102" r="7" fill="#ffffff"/><circle cx="278" cy="102" r="7" fill="#ffffff"/>
+    <path d="M150 178 C150 136 196 122 256 122 C316 122 362 136 362 178 C362 200 318 210 256 210 C194 210 150 200 150 178 Z" fill="#111111"/>
+    <ellipse cx="194" cy="166" rx="24" ry="17" fill="#ffffff"/>
+    <ellipse cx="318" cy="166" rx="24" ry="17" fill="#ffffff"/>
   </g>
 </svg>

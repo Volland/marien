@@ -47,23 +47,27 @@ Over finite ground facts, stratified Datalog negation and λProlog negation as f
 
 **Rejected alternatives:** *a Cypher oracle* (translating rules to Cypher is not systematic, and NAF over Cypher patterns is hard to state); *upstream OCaml ELPI as the oracle* (it shares the language semantics but not the database encoding or partitioning; useful for LeanElpi, not for Marien's analyses).
 
-### Statements desugar in the binder
+### Statements desugar in the transformer
 
-The [[components#Statement extension]] parses with its own small grammar in the Transformer, and the Binder rewrites each statement into the bound form of its `CALL elpi_*` table function. The Planner and Mapper then reuse the function's existing plan. No statement logic exists outside the desugaring, so equivalence holds by construction and the tests confirm it.
+The [[components#Statement extension]] reads a statement with its own small grammar (Lean, `Marien/Statement.lean`) and the transformer returns the parse tree LadybugDB's parser builds for the statement's `CALL elpi_*` form, with the arguments as literal values. LadybugDB's own Binder, Planner and Mapper then run the `CALL` unchanged, write statements through the same `rewriteFunc`. No statement logic exists outside the desugaring, so equivalence holds by construction and the paired tests confirm it.
 
 - motivated_by:: [[decisions#CALL functions first]] {weight: primary}
 - motivated_by:: [[constraints#Extensions are C++ shared libraries]]
+
+**Why not the binder.** A binder extension receives no binder or client context, so it cannot bind the `CALL` it would desugar to; and LadybugDB does not export the vtable of `ParsedFunctionExpression`, so the transformer copies one parsed by LadybugDB's exported parser from `CALL <fn>()` and adds the literal arguments.
+
+**Not reachable yet.** LadybugDB 0.22.1 hands extension transformers only `CREATE USER` and `CREATE ROLE` ([[constraints#Only CREATE USER and CREATE ROLE reach extension parsers]]). The transformer is registered and leaves other text alone; `CALL elpi_statement('<statement>')` runs the same parser and desugaring through the bind of the `CALL` form until LadybugDB accepts a route for extension statements (task 4.5).
 
 ```mermaid
 sequenceDiagram
   participant Q as Query text
   participant T as Transformer (statements.cpp)
-  participant B as Binder
-  participant F as CALL elpi_* table function
+  participant L as Lean: parse, desugar
+  participant B as LadybugDB Binder/Planner/Mapper
   Q->>T: CREATE RULES org_rules AS $$…$$
-  T->>B: RuleStatement{kind=create, name, source bytes}
-  B->>F: bind elpi_save(name, source)
-  F-->>B: bind data (checked in Lean)
+  T->>L: statement text
+  L-->>T: elpi_save, ['org_rules', source bytes]
+  T->>B: StandaloneCallFunction elpi_save('org_rules', source)
   B-->>Q: same plan, rows and errors as the CALL form
 ```
 
@@ -83,7 +87,7 @@ Under [[decisions#Proofs where practical]] ([[adr:0020]]):
 | Offline and runtime signatures come from one encoding | **By construction**: both call `Signature.ofSchema` | The structure makes it true; the agreement check guards the printers. |
 | `LeanPrinter` and `deriving Elpi` produce the `ElpiPrinter` signature | **Proved where practical**: `LeanPrinter.derive_eq_elpi` for the kind/constructor skeleton; **tested** by property test over random schemas for the full output | `deriving Elpi` runs in `MetaM`, outside what a pure proof can see; the printer-level lemma covers the pure part. |
 | Schema dump is canonical | **Proved**: `Dump.canonical_perm` (permuted catalog gives an equal document) | It follows from sorting. |
-| Statement desugaring is total and unique | **Proved**: `Statement.desugar_total` (every parsed statement maps to exactly one `CALL` form) | A small finite datatype; cheap to prove. |
+| Statement desugaring is total and unique | **Proved**: `Statement.desugar_total` (every parsed statement maps to exactly one `CALL` form, of one of the five functions) | A small finite datatype; cheap to prove. |
 | Statements equal their `CALL` forms at run time | **Tested**: paired execution on random databases | Depends on LadybugDB's planner. |
 | `$$` source reaches the store unchanged | **Proved**: `Statement.source_roundtrip` for the delimiter lexer; **tested** end to end | The lexer is pure; the store path is covered by M1's round-trip test. |
 | Locality check soundness (open question) | **Optional**: complete M3's stretch theorem `Locality.sound`, or record the decision to rely on the M3 properties and the Soufflé oracle | This closes the open item from the design interview. |
