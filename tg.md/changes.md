@@ -71,6 +71,6 @@ Archived to `openspec/changes/archive/2026-11-06-add-higher-order-layer/`; its r
 
 M5: offline Lean codegen from the shared encoding, the Soufflé oracle, custom statements and the upstream proposals.
 
-In progress: the schema dump and `marien-codegen` with the agreement check and two proofs (`Dump.canonical_perm`, `LeanPrinter.derive_eq_elpi`); the Soufflé oracle (`tests/oracle/souffle/run.sh`); custom statements with two proofs (`desugar_total`, `source_roundtrip`), registered as a transformer and run through `CALL elpi_statement` until LadybugDB routes them; the prebuilt Lean archive (`scripts/build-lean-archive.sh`). Filed upstream: LadybugDB/ladybug#1518 (catalog-change hook) and #1519 (extension statements). Open: the Soufflé CI job's first run, the upstream answers, the `ladybugdb/extensions` proposal (drafted).
+Released in v0.4.0 (2026-11-06, four platforms, with the new website): the schema dump and `marien-codegen` with the agreement check and two proofs (`Dump.canonical_perm`, `LeanPrinter.derive_eq_elpi`); the Soufflé oracle (`tests/oracle/souffle/run.sh`); custom statements with two proofs (`desugar_total`, `source_roundtrip`), registered as a transformer and run through `CALL elpi_statement` until LadybugDB routes them; the prebuilt Lean archive (`scripts/build-lean-archive.sh`). Filed upstream: LadybugDB/ladybug#1518 (catalog-change hook) and #1519 (extension statements). Open: the Soufflé CI job's first run, the upstream answers, the `ladybugdb/extensions` proposal (drafted).
 
 - status:: proposed
