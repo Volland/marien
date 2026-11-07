@@ -16,7 +16,7 @@ This change also tracks the upstream proposals for LadybugDB (a DDL hook for eag
 
 - **Offline codegen.** `lake exe marien-codegen <schema.json>` reads a schema dump (written by `CALL elpi_signature()` in JSON mode) and emits a Lean module with one `inductive` per kind, `deriving Elpi`. It uses the same `Signature.ofSchema` as the runtime, followed by a Lean printer instead of an ELPI printer. A check fails the build when the offline and runtime signatures disagree.
 - **Soufflé oracle.** A translator from the first-order stratified subset of a module (no `pi`, no `=>`, no higher-order arguments, no cut) and the materialized facts to Soufflé Datalog. The test harness runs both engines and compares answer multisets.
-- **Custom statements.** `CREATE RULES <name> AS $$…$$`, `DROP RULES <name>`, `CHECK RULES`, `VALIDATE [<modules>] [MIN SEVERITY <s>]` and `ANNOTATE <table> SET <key> = <value>`, added through LadybugDB's Transformer → Binder → Planner → Mapper extension pipeline. Each one behaves exactly like its `CALL` form.
+- **Custom statements.** `CREATE RULES <name> AS $$…$$`, `DROP RULES <name>`, `CHECK RULES`, `VALIDATE [<modules>] [MIN SEVERITY <s>]` and `ANNOTATE <table> SET <key> = <value>`, run through `CALL elpi_statement('<statement>')`, a function over the statement text, since LadybugDB keeps its grammar to itself. Each one behaves exactly like its `CALL` form.
 - **Upstream proposals** (tasks only): a catalog-change hook in LadybugDB for eager rechecks; contributing the extension to `ladybugdb/extensions` with a prebuilt Lean archive, so upstream CI needs no Lean toolchain.
 - **The open question on proving the locality check** is answered here: either the M3 stretch theorem is completed, or the decision to rely on tests is recorded.
 

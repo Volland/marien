@@ -42,3 +42,13 @@ We would be glad to send a pull request for either part if the shape is acceptab
 ---
 
 Filed as https://github.com/LadybugDB/ladybug/issues/1519 on 2026-11-06 (task 4.5 of `openspec/changes/add-ecosystem`).
+
+## Answer (2026-11-07)
+
+Declined by adsharma (LadybugDB): other databases expose a UDF that takes a string (many SQL databases support Cypher this way), and letting extensions modify the grammar risks user confusion and malicious extensions taking over parts of Cypher.
+
+That is `CALL elpi_statement('<statement>')`, which Marien already had. The statement transformer was removed and the spec makes `elpi_statement` the interface (decision "Statements are a string function").
+
+What remains is escaping. SQL databases pair a string UDF with dollar quoting or bound parameters, so the embedded program needs no escaping. In LadybugDB 0.22.1 a parameter cannot reach a table function with a `rewriteFunc`: `StandaloneCallRewriter::visitStandaloneCallFunction` binds the `CALL` inside `ClientContext::parseQuery` with a fresh `Binder` and no parameter values, on every path (`prepare`, `prepareWithParams`, `query`), and `execute` reuses the rewritten statements. Follow-up asked on the issue on 2026-11-07 (task 4.6):
+
+> Would you accept a change that lets a rewriting table function see bound parameter values? For `prepareWithParams` the values are known before `parseQuery`, so they could be handed to the rewriter's binder; for prepare-then-execute (the C API) the rewrite would have to wait for the first execute.

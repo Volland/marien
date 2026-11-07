@@ -29,7 +29,7 @@ endif()
 
 set(MARIEN_LEAN_ARCHIVE "" CACHE PATH "Prebuilt Lean side (scripts/build-lean-archive.sh); empty: build it with lake")
 set(SHIM_CXX extension.cpp catalog.cpp scan.cpp structure.cpp statements.cpp)
-set(SHIM_INCLUDES "${LADYBUG_SRC}/src/include;${LADYBUG_GEN}/src/include;${LADYBUG_SRC}/third_party/fastpfor;${LADYBUG_SRC}/third_party/alp/include;${LADYBUG_SRC}/third_party/antlr4_runtime/src")
+set(SHIM_INCLUDES "${LADYBUG_SRC}/src/include;${LADYBUG_GEN}/src/include;${LADYBUG_SRC}/third_party/fastpfor;${LADYBUG_SRC}/third_party/alp/include")
 set(PINNED_VERSION "${LADYBUG_VERSION}" CACHE STRING "LadybugDB version the load check expects")
 
 if(MARIEN_LEAN_ARCHIVE)

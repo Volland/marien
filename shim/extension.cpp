@@ -94,12 +94,18 @@ std::vector<std::string> takeStrings(marien_strings s, const std::string& fn) {
     return out;
 }
 
+// A string literal argument. LadybugDB rewrites a standalone CALL while parsing, before a prepared
+// statement's parameters are bound (constraint "Standalone CALL rewrites run before parameters are
+// bound"), so a write function sees a parameter without its value and says so.
 std::string literal(const TableFuncBindInput* input, idx_t i, const char* fn) {
+    if (input->params.at(i)->expressionType == ExpressionType::PARAMETER) {
+        throw RuntimeException(std::string(fn) + ": arguments must be string literals, not query parameters; " +
+                               "LadybugDB rewrites this CALL before parameters are bound (LadybugDB/ladybug#1519)");
+    }
     try {
         return input->getLiteralVal<std::string>(i);
     } catch (Exception&) {
-        throw RuntimeException(std::string(fn) +
-                               ": arguments must be string literals (parameters are not supported)");
+        throw RuntimeException(std::string(fn) + ": arguments must be string literals");
     }
 }
 
@@ -287,8 +293,10 @@ struct ElpiRecheck {
 /* --- elpi_statement ------------------------------------------------------------------ */
 
 // `CALL elpi_statement('<statement>')`: a custom statement (Marien/Statement.lean) through the bind
-// of its CALL form, until LadybugDB routes the statement syntax to extensions. A write statement
-// binds exactly as its function does; VALIDATE rewrites into its `CALL elpi_validate(...) RETURN *`.
+// of its CALL form. It is the statement interface: LadybugDB keeps its grammar to itself and prefers
+// a function over a string (LadybugDB/ladybug#1519). A write statement binds exactly as its function
+// does; VALIDATE rewrites into its `CALL elpi_validate(...) RETURN *`.
+// @tg: implements:: [[openspec:custom-statements#Rule statements]]
 // @tg: implements:: [[openspec:custom-statements#Statements equal their CALL forms]] {note: "elpi_statement dispatches to the bind of the CALL form"}
 struct ElpiStatement {
     static constexpr const char* name = "ELPI_STATEMENT";
@@ -1214,7 +1222,6 @@ __attribute__((visibility("default"))) void init(ClientContext* context) {
     ExtensionUtils::addTableFunc<marien::ElpiRun>(db);
     ExtensionUtils::addTableFunc<marien::ElpiValidate>(db);
     ExtensionUtils::addStandaloneTableFunc<marien::ElpiStatement>(db);
-    marien::registerStatements(db);
 }
 
 __attribute__((visibility("default"))) const char* name() {

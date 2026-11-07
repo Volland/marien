@@ -168,7 +168,7 @@ generate S :- schema.annot T <span class="s">"acyclic"</span> <span class="s">"t
       <p><code>elpi_recheck</code> writes the result: <code>ok</code> again, or <code>broken</code> with the error, in one statement for all the modules it checks.</p>
 
       <h2 id="statements">Statements</h2>
-      <p>Each statement is syntax for one <code>CALL</code>, with the same columns, rows, errors and stored state. The rule source goes between dollar quotes and is stored byte for byte; use <code>$tag$…$tag$</code> when it contains <code>$$</code>.</p>
+      <p>A statement is a shorter way to write one <code>CALL</code>, with the same columns, rows, errors and stored state. Pass it to <code>elpi_statement</code> as a string: <code>CALL elpi_statement('DROP RULES org')</code>. The rule source goes between dollar quotes and is stored byte for byte; use <code>$tag$…$tag$</code> when it contains <code>$$</code>.</p>
       <div class="ref-wrap"><table class="ref">
         <tr><th>Statement</th><th>Same as</th></tr>
         <tr><td><code>CREATE [OR REPLACE] RULES org AS $$…$$</code></td><td><code>elpi_save('org', '…')</code></td></tr>
@@ -177,7 +177,7 @@ generate S :- schema.annot T <span class="s">"acyclic"</span> <span class="s">"t
         <tr><td><code>VALIDATE [org, hr] [MIN SEVERITY warning]</code></td><td><code>elpi_validate(['org', 'hr'], 'warning')</code></td></tr>
         <tr><td><code>ANNOTATE Owns SET acyclic = 'true'</code></td><td><code>elpi_annotate('Owns', 'acyclic', 'true')</code></td></tr>
       </table></div>
-      <p class="note"><strong>For now, through <code>elpi_statement</code>.</strong> LadybugDB __LBUG__ passes only <code>CREATE USER</code> and <code>CREATE ROLE</code> to extension parsers, so write <code>CALL elpi_statement('VALIDATE kyc MIN SEVERITY warning')</code>. Marien registers its statement parser already; the plain syntax works once LadybugDB routes it (<a href="https://github.com/LadybugDB/ladybug/issues/1519">ladybug#1519</a>). <code>MIN SEVERITY</code> needs module names.</p>
+      <p class="note"><strong>Why a string.</strong> LadybugDB keeps its grammar to itself and embeds other languages as a function over a string, as SQL databases embed Cypher (<a href="https://github.com/LadybugDB/ladybug/issues/1519">ladybug#1519</a>). The statement is a Cypher string, so escape its quotes and backslashes once, as in any string; inside the dollar quotes nothing more is escaped. Query parameters such as <code>$s</code> do not reach <code>elpi_statement</code> or the write functions in LadybugDB __LBUG__, which rewrites the <code>CALL</code> before binding them. <code>MIN SEVERITY</code> needs module names.</p>
 
       <h2 id="options">Options and limits</h2>
       <p>Set with <code>CALL &lt;option&gt;=&lt;value&gt;</code> for the connection. A limit that is reached ends the call with an error naming it, never with a partial result; only <code>elpi_max_solutions</code> stops early, and says so.</p>

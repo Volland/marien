@@ -116,7 +116,7 @@ Record: [ADR 0010](../docs/adr/0010-staged-rule-generation-over-a-reflected-sche
 
 Each module stores a hash of the tables it reaches; a run whose hash differs regenerates and rechecks the module in memory, and `elpi_recheck` revalidates everything and persists the result.
 
-**Context.** There is no DDL hook. **Consequences.** Unrelated DDL never invalidates a module; a module that fails the recheck errors and is marked `broken`, with no fallback to stale generated code. An upstream DDL hook for eager checks is a later step.
+**Context.** There is no DDL hook. **Consequences.** Unrelated DDL never invalidates a module; a module that fails the recheck errors and is marked `broken`, with no fallback to stale generated code. An upstream DDL hook for eager checks was proposed and declined (LadybugDB/ladybug#1518, 2026-11-07), so this is the only path: it is correct for every snapshot, which an asynchronous WAL tailer would not be.
 
 Record: [ADR 0011](../docs/adr/0011-lazy-recheck-by-schema-hash.md).
 
@@ -687,10 +687,24 @@ A custom statement becomes, in the transformer, the parse tree of its `CALL elpi
 
 **Context.** A binder extension receives no binder or client context, so it cannot bind the `CALL` it would desugar to; the parse tree of the `CALL` needs nothing else. LadybugDB does not export `ParsedFunctionExpression`'s vtable, so the node is copied from LadybugDB's parse of `CALL <fn>()`. **Consequences.** No statement logic outside `Statement.desugar`; the source reaches `elpi_save` as a value, never re-escaped. `VALIDATE … MIN SEVERITY` needs module names, since `elpi_validate` has no all-modules form at a severity. Rejected: desugaring in a binder extension, and rewriting into `CALL` text, since LadybugDB does not rewrite a rewritten standalone call again.
 
-- status:: accepted
+- status:: superseded
 - motivated_by:: [[decisions#CALL functions first]] {weight: primary}
 - motivated_by:: [[constraints#Only CREATE USER and CREATE ROLE reach extension parsers]]
 - motivated_by:: [[constraints#Extensions are C++ shared libraries]]
+- changed_by:: [[changes#add-ecosystem]]
+
+## Statements are a string function
+
+Custom statements run as `CALL elpi_statement('<statement>')`: Lean parses and desugars the text, and the function binds exactly as the statement's `CALL elpi_*` form does. There is no statement transformer.
+
+**Context.** LadybugDB routes no new syntax to extension transformers, and its maintainers declined a route: they prefer a function over a string, as SQL databases embed Cypher, to extensions changing the grammar (LadybugDB/ladybug#1519). **Consequences.** A statement is a Cypher string literal, so its quotes and backslashes are escaped once; the `$$` body is then taken byte for byte. A query parameter would avoid the escaping but cannot reach a rewriting function, so writes refuse one by name. The transformer, its copy of LadybugDB's `ParsedFunctionExpression` and the ANTLR include were removed.
+
+- status:: accepted
+- date:: 2026-11-07
+- supersedes:: [[decisions#Statements desugar in the transformer]] {since: "0.4.1", reason: "LadybugDB declined extension grammar (#1519)"}
+- motivated_by:: [[decisions#CALL functions first]] {weight: primary}
+- motivated_by:: [[constraints#Only CREATE USER and CREATE ROLE reach extension parsers]]
+- motivated_by:: [[constraints#Standalone CALL rewrites run before parameters are bound]]
 - changed_by:: [[changes#add-ecosystem]]
 
 ## The locality check rests on its theorem premise and two differential checks

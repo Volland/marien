@@ -30,7 +30,9 @@ LadybugDB offers transformer, binder, planner, mapper and catalog extensions, bu
 - source:: LadybugDB `src/include/extension/`, checked 2026-10-31
 - constrains:: [[decisions#Lazy recheck by schema hash]]
 
-Proposed upstream as a listener called in the DDL's transaction: LadybugDB/ladybug#1518 (`docs/upstream/catalog-change-hook.md`, 2026-11-06).
+Proposed upstream as a listener called in the DDL's transaction: LadybugDB/ladybug#1518 (`docs/upstream/catalog-change-hook.md`, 2026-11-06). Declined on 2026-11-07: catalog-specific hooks are untenable for LadybugDB because of MVCC and commit ordering. The suggested alternative, tailing the WAL (`adsharma/print-wal-demo`), sees a DDL only after commit, on another thread, and pins the WAL so it grows without bound; it cannot mark modules broken atomically with the change, so Marien does not use it.
+
+The catalog's version counter is no substitute either: it is global and bumped at commit, so a reader whose snapshot predates a DDL sees the new number with the old schema, and a writer sees its own uncommitted DDL under the old number (`src/transaction/transaction.cpp`, `Transaction::publishCommit`, v0.22.1).
 
 ## Table functions can rewrite into Cypher
 
@@ -227,9 +229,22 @@ LadybugDB parses every statement with its own ANTLR grammar first; its Transform
 New statement syntax such as `CREATE RULES org AS $$…$$` is therefore a syntax error before any extension sees it; the Binder, Planner and Mapper hooks only receive statements that a transformer produced.
 
 - source:: LadybugDB v0.22.1 and `main` (2026-11-06): `src/parser/transformer.cpp` (`transformExtensionStatement`, called for `iC_CreateUser` and `iC_CreateRole` only), `src/antlr4/Cypher.g4` (`oC_Statement`), `src/main/client_context.cpp` (`parseQuery`)
-- constrains:: [[components#Statement extension]] {strength: must, note: "no route from new syntax to the extension hooks without a grammar change upstream (custom-statements, Rule statements)"}
+- constrains:: [[components#Statement extension]] {strength: must, note: "no route from new syntax to an extension; statements are a function over a string (custom-statements, Rule statements)"}
+- constrains:: [[decisions#Statements are a string function]] {strength: must}
 
-Proposed upstream as a text-level fallback for extension transformers, with the parse node classes exported: LadybugDB/ladybug#1519 (`docs/upstream/extension-statements.md`).
+Proposed upstream as a text-level fallback for extension transformers, with the parse node classes exported: LadybugDB/ladybug#1519 (`docs/upstream/extension-statements.md`). Declined on 2026-11-07: the maintainers prefer a function that takes the statement as a string, as SQL databases embed Cypher, and see extension grammar as a risk of user confusion and of extensions taking over parts of Cypher.
+
+## Standalone CALL rewrites run before parameters are bound
+
+LadybugDB calls a table function's `rewriteFunc` while parsing, binding the `CALL` with a fresh binder that has no parameter values, so a rewriting function sees a query parameter as an unbound placeholder.
+
+The rewritten text replaces the statement before `prepare` returns, and `execute` reuses it, so the bound value never reaches the function. Marien's writes all rewrite, so none of them can take `$param` arguments.
+
+- source:: LadybugDB v0.22.1: `src/parser/visitor/standalone_call_rewriter.cpp` (`visitStandaloneCallFunction`), `src/main/client_context.cpp` (`parseQuery`); integration test `statement parameter`, 2026-11-07
+- constrains:: [[decisions#Statements are a string function]] {strength: must, note: "statements are string literals, escaped once as Cypher strings"}
+- constrains:: [[components#Extension shim]] {strength: must, note: "write functions refuse a parameter with an error naming the reason"}
+
+Asked upstream in LadybugDB/ladybug#1519 (2026-11-07): bind the rewrite with the prepared statement's parameters.
 
 ## ld64 drops dead stripping when one object lacks subsections
 

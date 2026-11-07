@@ -47,33 +47,35 @@ Over finite ground facts, stratified Datalog negation and λProlog negation as f
 
 **Rejected alternatives:** *a Cypher oracle* (translating rules to Cypher is not systematic, and NAF over Cypher patterns is hard to state); *upstream OCaml ELPI as the oracle* (it shares the language semantics but not the database encoding or partitioning; useful for LeanElpi, not for Marien's analyses).
 
-### Statements desugar in the transformer
+### Statements are a string function
 
-The [[components#Statement extension]] reads a statement with its own small grammar (Lean, `Marien/Statement.lean`) and the transformer returns the parse tree LadybugDB's parser builds for the statement's `CALL elpi_*` form, with the arguments as literal values. LadybugDB's own Binder, Planner and Mapper then run the `CALL` unchanged, write statements through the same `rewriteFunc`. No statement logic exists outside the desugaring, so equivalence holds by construction and the paired tests confirm it.
+`CALL elpi_statement('<statement>')` reads a statement with its own small grammar (Lean, `Marien/Statement.lean`), desugars it to its `CALL elpi_*` form and binds exactly as that function does: write statements through the same bind cores and `rewriteFunc`, `VALIDATE` by rewriting into `CALL elpi_validate(…) RETURN *`. No statement logic exists outside the desugaring, so equivalence holds by construction and the paired tests confirm it. This is the shape LadybugDB's maintainers recommend: Apache AGE and SQL databases embed Cypher as a function over a string, and letting extensions change the grammar risks user confusion and extensions taking over parts of Cypher (LadybugDB/ladybug#1519).
 
 - motivated_by:: [[decisions#CALL functions first]] {weight: primary}
-- motivated_by:: [[constraints#Extensions are C++ shared libraries]]
+- motivated_by:: [[constraints#Only CREATE USER and CREATE ROLE reach extension parsers]]
 
-**Why not the binder.** A binder extension receives no binder or client context, so it cannot bind the `CALL` it would desugar to; and LadybugDB does not export the vtable of `ParsedFunctionExpression`, so the transformer copies one parsed by LadybugDB's exported parser from `CALL <fn>()` and adds the literal arguments.
+**The transformer is gone.** M5 first registered a statement transformer that built the `CALL` form's parse tree, waiting for LadybugDB to route new syntax to it. Upstream declined that route, so the transformer, its copy of `ParsedFunctionExpression` and its ANTLR dependency were removed; `elpi_statement` is the interface, not a stopgap.
 
-**Not reachable yet.** LadybugDB 0.22.1 hands extension transformers only `CREATE USER` and `CREATE ROLE` ([[constraints#Only CREATE USER and CREATE ROLE reach extension parsers]]). The transformer is registered and leaves other text alone; `CALL elpi_statement('<statement>')` runs the same parser and desugaring through the bind of the `CALL` form until LadybugDB accepts a route for extension statements (task 4.5).
+**Escaping and parameters.** A statement is a Cypher string literal, so quotes and backslashes in it are escaped once, as in any Cypher string; the `$$` body is then taken byte for byte. A query parameter would avoid that escaping, but LadybugDB rewrites a standalone `CALL` while parsing, before parameters are bound ([[constraints#Standalone CALL rewrites run before parameters are bound]]), so the write functions refuse a parameter with an error that names the reason. Passing the bound parameters to that rewrite is the narrower request left upstream (task 4.6).
 
 ```mermaid
 sequenceDiagram
   participant Q as Query text
-  participant T as Transformer (statements.cpp)
+  participant F as elpi_statement bind (extension.cpp)
   participant L as Lean: parse, desugar
-  participant B as LadybugDB Binder/Planner/Mapper
-  Q->>T: CREATE RULES org_rules AS $$…$$
-  T->>L: statement text
-  L-->>T: elpi_save, ['org_rules', source bytes]
-  T->>B: StandaloneCallFunction elpi_save('org_rules', source)
-  B-->>Q: same plan, rows and errors as the CALL form
+  participant W as elpi_save bind core
+  Q->>F: CALL elpi_statement('CREATE RULES org_rules AS $$…$$')
+  F->>L: statement text
+  L-->>F: elpi_save, ['org_rules', source bytes]
+  F->>W: bind('org_rules', source)
+  W-->>Q: same rewrite, rows and errors as the CALL form
 ```
 
 ### Upstream proposals are tasks, not requirements
 
 A catalog-change hook in LadybugDB, and contributing to `ladybugdb/extensions` with a prebuilt Lean archive, depend on decisions this project does not own. They are tracked as tasks. Nothing in Marien's specs relies on them being accepted.
+
+**Answers (2026-11-07).** LadybugDB declined both hooks. A catalog listener is untenable for them because of MVCC and commit ordering; they pointed at tailing the WAL instead (`adsharma/print-wal-demo`). That fits replication, not Marien: it sees a DDL only after commit and on another thread, so it cannot mark modules broken atomically with the change, and it pins the WAL so the file grows without bound. The lazy recheck, which is correct for each snapshot, stays the only path (task 4.2 closed). Extension grammar is declined in favour of a function over a string, which `elpi_statement` already is (task 4.5 closed, 4.6 opened).
 
 - motivated_by:: [[constraints#No DDL hooks for extensions]]
 - motivated_by:: [[decisions#Out-of-tree extension with its own repository]]

@@ -125,7 +125,4 @@ struct Desugared {
 };
 std::optional<Desugared> desugarStatement(const std::string& text);
 
-// Registers the statement parser with LadybugDB's transformer extensions (statements.cpp).
-void registerStatements(lbug::main::Database& db);
-
 } // namespace marien

@@ -1526,7 +1526,7 @@ static int dump_is_canonical(void) {
     return 1;
 }
 
-/* --- custom-statements: through CALL elpi_statement until LadybugDB routes the syntax ---- */
+/* --- custom-statements: through CALL elpi_statement ------------------------------------- */
 
 /* Run statement text through elpi_statement; NULL on error (last_error set). */
 static const char *statement(Db *d, const char *text) {
@@ -1568,9 +1568,6 @@ static int malformed_statement(void) {
     CHECK(e && strstr(e, "missing module name"), "names the missing module name: %s", e ? e : "(accepted)");
     e = statement(&d, "CREATE USER alice") ? NULL : last_error;
     CHECK(e && strstr(e, "not a Marien statement"), "other syntax: %s", e ? e : "(accepted)");
-    /* CREATE USER reaches the registered statement transformer, which leaves it to LadybugDB */
-    e = fails(&d, "CREATE USER alice");
-    CHECK(e && strstr(e, "Failed parse the statement"), "CREATE USER is not Marien's: %s", e ? e : "(accepted)");
     /* the database is still usable */
     OK(&d, "CALL elpi_save('m', 'pred n o:int. n 1.')");
     close_db(&d);
@@ -1622,6 +1619,46 @@ static int statement_bytes(void) {
     snprintf(want, sizeof want, "%s\n", src);
     const char *r = OK(&d, "MATCH (m:_elpi_module {name: 'q'}) RETURN m.source");
     CHECK(strcmp(r, want) == 0, "byte for byte:\n%s\nvs\n%s", r, want);
+    close_db(&d);
+    return 1;
+}
+
+/* Run a prepared query with one bound string parameter $s; NULL on error (last_error set). */
+static const char *with_parameter(Db *d, const char *q, const char *s) {
+    lbug_prepared_statement ps;
+    lbug_connection_prepare(&d->conn, q, &ps);
+    if (!lbug_prepared_statement_is_success(&ps)) {
+        snprintf(last_error, sizeof last_error, "prepare: %s", lbug_prepared_statement_get_error_message(&ps));
+        lbug_prepared_statement_destroy(&ps);
+        return NULL;
+    }
+    lbug_prepared_statement_bind_string(&ps, "s", s);
+    lbug_query_result r;
+    lbug_connection_execute(&d->conn, &ps, &r);
+    int success = lbug_query_result_is_success(&r);
+    if (!success) {
+        char *e = lbug_query_result_get_error_message(&r);
+        snprintf(last_error, sizeof last_error, "%s", e);
+        lbug_destroy_string(e);
+    }
+    lbug_query_result_destroy(&r);
+    lbug_prepared_statement_destroy(&ps);
+    return success ? "" : NULL;
+}
+
+/* @tg: verifies:: [[openspec:custom-statements#Rule statements#A query parameter is refused]] {level: integration} */
+static int statement_parameter(void) {
+    ORG(d);
+    /* LadybugDB rewrites a standalone CALL while parsing, before parameters are bound */
+    const char *e = with_parameter(&d, "CALL elpi_statement($s)", "CREATE RULES q AS $$pred n o:int. n 1.$$")
+        ? NULL : last_error;
+    CHECK(e && strstr(e, "elpi_statement: arguments must be string literals, not query parameters") &&
+          strstr(e, "#1519"), "says why and names the issue: %s", e ? e : "(accepted)");
+    e = with_parameter(&d, "CALL elpi_save('q', $s)", "pred n o:int. n 1.") ? NULL : last_error;
+    CHECK(e && strstr(e, "elpi_save: arguments must be string literals"), "elpi_save too: %s", e ? e : "(accepted)");
+    /* nothing was stored, and the same text as a literal works */
+    CHECK(strcmp(OK(&d, "MATCH (m:_elpi_module {name: 'q'}) RETURN count(*)"), "0\n") == 0, "nothing stored");
+    CHECK(statement(&d, "CREATE RULES q AS $$pred n o:int. n 1.$$"), "literal: %s", last_error);
     close_db(&d);
     return 1;
 }
@@ -1683,6 +1720,7 @@ int main(int argc, char **argv) {
         {"create rules statement", create_rules_statement}, {"malformed statement", malformed_statement},
         {"validate statement", validate_statement}, {"statement errors", statement_errors},
         {"statement bytes", statement_bytes}, {"tagged delimiter", tagged_delimiter},
+        {"statement parameter", statement_parameter},
     };
     int run = 0;
     for (size_t i = 0; i < sizeof tests / sizeof *tests; i++) {

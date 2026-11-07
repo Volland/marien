@@ -213,7 +213,7 @@ ubo_of C P :- ultimate_owner P C.</pre></div>
         <div class="num">06</div>
         <div class="stack">
           <h3>Or say it as a statement</h3>
-          <p>Each <code>CALL</code> has a statement form: <code>CREATE RULES … AS $$…$$</code>, <code>DROP RULES</code>, <code>CHECK RULES</code>, <code>VALIDATE</code> and <code>ANNOTATE</code>. LadybugDB __LBUG__ does not yet pass new syntax to extensions, so for now a statement runs through <code>elpi_statement</code>, with exactly the result of its <code>CALL</code>.</p>
+          <p>Each <code>CALL</code> has a statement form: <code>CREATE RULES … AS $$…$$</code>, <code>DROP RULES</code>, <code>CHECK RULES</code>, <code>VALIDATE</code> and <code>ANNOTATE</code>. A statement is a string you pass to <code>elpi_statement</code>, the way SQL databases embed Cypher, and it returns exactly the result of its <code>CALL</code>.</p>
           <div class="window"><header><span class="dot"></span><span class="dot"></span><span class="dot"></span><span>lbug</span></header>
 <pre><span class="k">CALL</span> elpi_statement(<span class="s">'VALIDATE kyc MIN SEVERITY error'</span>);</pre></div>
           <div class="result"><header><span>3 rows</span><span>the full report columns</span></header><div class="scroll"><table>
