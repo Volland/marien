@@ -2,7 +2,8 @@
 # Linux leg of the tracer bullet, run inside a fresh Ubuntu 24.04 container (tests/linux/docker.sh):
 # install the Lean toolchain, configure the LadybugDB headers, run the Lean tests, rebuild the Lean
 # runtime archive as PIC with global-dynamic TLS (scripts/build-leanrt-pic.sh), build the
-# extension with it, check its dependencies, exports and size, and run the integration tests.
+# extension with it, check its dependencies, exports and size, run the integration tests, then
+# build the prebuilt Lean archive and test the extension built from it without Lean.
 # The repository is mounted read-only at $SRC (default /src), LadybugDB's source at
 # $SRC/.deps/ladybug and its Linux release (liblbug and the CLI) at $SRC/.deps/cli-linux;
 # everything is built under /work.
@@ -62,5 +63,12 @@ if [ "${MARIEN_ORACLE:-}" = 1 ]; then
   tests/oracle/souffle/run.sh "${ORACLE_CASES:-200}"
 fi
 scripts/test-install.sh "$L"
-# hand the extension to the host when it mounted /out (tests/linux/docker.sh)
-if [ -d /out ] && [ -w /out ]; then cp "$L" /out/libmarien.lbug_extension; fi
+# The prebuilt Lean side for builds without Lean (scripts/build-lean-archive.sh): built with the PIC
+# runtime above, then the extension is rebuilt from it with no Lean on PATH and tested again.
+echo "== prebuilt Lean archive"
+scripts/test-lean-archive.sh
+# hand the extension and the archive to the host when it mounted /out (tests/linux/docker.sh)
+if [ -d /out ] && [ -w /out ]; then
+  cp "$L" /out/libmarien.lbug_extension
+  tar -C build/lean-archive -czf /out/marien-lean.tar.gz include lib
+fi

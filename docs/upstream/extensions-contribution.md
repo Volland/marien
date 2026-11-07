@@ -11,11 +11,11 @@ We would like to propose it for `ladybugdb/extensions`, in a form that needs **n
 - `libmarien_lean.a`: the runtime bridge, Marien's Lean code, the LeanElpi engine and the Lean runtime, partially linked into one object whose only global symbols are the bridge's C API (`marien_bridge_*`); on macOS the GMP and libuv functions it calls stay global in a second object and are hidden by the extension's export list.
 - `lean_bridge.h` and a CMake package (`find_package(marien_lean CONFIG)`, target `marien::lean`).
 
-Marien's releases would publish the archive per platform (`osx-arm64`, `linux-x86_64`, `linux-aarch64`, …) with SHA-256 sums; the extension's CMake would fetch the archive pinned by version and checksum. Building from the archive is in Marien's repository today (`scripts/build-lean-archive.sh`, `shim/CMakeLists.txt -DMARIEN_LEAN_ARCHIVE=…`, tested by `scripts/test-lean-archive.sh`: the extension built without Lean on `PATH` passes the same 77 integration tests).
+Marien's releases publish the archive per platform (`marien-lean-<version>-<os>-<cpu>.tar.gz` for `osx-arm64`, `osx-amd64`, `linux-arm64`, `linux-amd64`) with `SHA256SUMS-lean`; the extension's CMake would fetch the archive pinned by version and checksum. The archive does not depend on the LadybugDB version, only on Marien's. Building from the archive is in Marien's repository today (`scripts/build-lean-archive.sh`, `shim/CMakeLists.txt -DMARIEN_LEAN_ARCHIVE=…`, tested by `scripts/test-lean-archive.sh` on macOS and Linux in every CI run and release: the extension built without Lean on `PATH` passes the same 78 integration tests).
 
-**What it relies on.** Table functions with `rewriteFunc`, the catalog and table scans in the calling transaction, extension options, and `TransformerExtension` for statement syntax (see LadybugDB/ladybug#1519). One Lean runtime lives inside the extension, so loading it with other extensions is safe; it exports only `init` and `name`.
+**What it relies on.** Table functions with `rewriteFunc`, the catalog and table scans in the calling transaction, and extension options. No transformer, binder or grammar hooks: statements are a function over a string, as discussed in LadybugDB/ladybug#1519. One Lean runtime lives inside the extension, so loading it with other extensions is safe; it exports only `init` and `name`.
 
-**Licences.** Marien and LeanElpi are Apache-2.0; the Lean runtime is Apache-2.0; GMP (LGPL-3.0) and libuv (MIT) are linked statically, as in Lean's own binaries.
+**Licences.** Marien (`LICENSE` in its repository) and LeanElpi are Apache-2.0; the Lean runtime is Apache-2.0; GMP (LGPL-3.0) and libuv (MIT) are linked statically, as in Lean's own binaries.
 
 **Questions for you.** Is a prebuilt archive acceptable in your build, or would you rather build the Lean side in a separate CI job? Which platforms must it cover? Should it stay out of `EXTENSION_LIST` until it has run in your CI for a release?
 

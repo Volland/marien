@@ -13,7 +13,8 @@ CALL elpi_validate(['org']) RETURN severity, code, subject_label, subject_pk;
 ```
 
 - **Site and downloads:** https://volland.github.io/marien/
-- **Releases:** https://github.com/Volland/marien/releases. Each release has one zip per OS and CPU, built for one LadybugDB version.
+- **Releases:** https://github.com/Volland/marien/releases. Each release has one zip per OS and CPU, built for one LadybugDB version. From v0.4.1 it also has the prebuilt Lean archive per OS and CPU (`marien-lean-*.tar.gz`, `SHA256SUMS-lean`), for building the extension without a Lean toolchain.
+- **License:** Apache-2.0 ([`LICENSE`](LICENSE)).
 - **Design and decisions:** [`tg.md/`](tg.md/), with the specs in [`openspec/`](openspec/).
 
 The name comes from *Marienkäfer*, German for ladybug. The website (https://volland.github.io/marien/) has a [tour](web/tour.html) on a know-your-customer graph, whose outputs `examples/kyc/run.sh --check` keeps true, and a [guide](web/guide.html).

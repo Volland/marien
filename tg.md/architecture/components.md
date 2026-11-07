@@ -39,7 +39,7 @@ The C ABI between shim and Lean: runtime start-up, per-thread initialization, ha
 The Lean entry points (`Marien/Ffi.lean`) take and return strings, string arrays, value arrays and opaque handles; `shim/lean_bridge.h` turns them into a plain C API whose symbols all start with `marien_bridge_`, the only Lean-side symbols the Linux link keeps global. Follows LeanElpi's `ensure_thread` pattern: a thread-local flag calls `lean_initialize_thread` once per LadybugDB worker thread. Starts the runtime once per process under `pthread_once`, and defines a runtime-only `lean_initialize` so the Lean compiler package is never linked. Prototype: `spike/bridge.c`. The Lean side calls LeanElpi only through its `Elpi.Host` module (signatures, goals from terms, fuel slices, facts as terms, clause AST).
 
 
-**Prebuilt archive (M5).** `scripts/build-lean-archive.sh` packs the bridge, Marien, LeanElpi and the Lean runtime as `libmarien_lean.a` with `lean_bridge.h` and the CMake target `marien::lean`; with `-DMARIEN_LEAN_ARCHIVE` the shim builds against it without a Lean toolchain (`scripts/test-lean-archive.sh`). Only `marien_bridge_*` is global, except on macOS, where GMP and libuv sit in a second object ([[constraints#ld64 drops dead stripping when one object lacks subsections]]).
+**Prebuilt archive (M5).** `scripts/build-lean-archive.sh` packs the bridge, Marien, LeanElpi and the Lean runtime as `libmarien_lean.a` with `lean_bridge.h` and the CMake target `marien::lean`; with `-DMARIEN_LEAN_ARCHIVE` the shim builds against it without a Lean toolchain (`scripts/test-lean-archive.sh`). Only `marien_bridge_*` is global, except on macOS, where GMP and libuv sit in a second object ([[constraints#ld64 drops dead stripping when one object lacks subsections]]). The Linux leg (`tests/linux/run.sh`) builds it with the PIC runtime and tests it like macOS does, and each release attaches it per OS and CPU as `marien-lean-<version>-<os>-<cpu>.tar.gz` with `SHA256SUMS-lean` (`.github/workflows/release.yml`).
 
 - module:: Marien.Ffi
 - milestone:: Spike
@@ -345,12 +345,13 @@ M3: `tests/M3.lean` covers the analyzer and the planner; `tests/Property/` holds
 
 ## Statement extension
 
-Custom statements such as `CREATE RULES`, `CHECK RULES` and `VALIDATE` as syntax over the table functions: a transformer that desugars each one to the parse tree of its `CALL` form. Source: `shim/statements.cpp`, `Marien/Statement.lean`.
+Custom statements such as `CREATE RULES`, `CHECK RULES` and `VALIDATE`, run as `CALL elpi_statement('<statement>')`, each desugared to its `CALL` form and bound as that function. Source: `shim/statements.cpp`, `Marien/Statement.lean`.
 
-The grammar, the dollar-quote lexer and the desugaring are Lean (`Statement.parse`, `desugar`, proofs `desugar_total` and `source_roundtrip`), behind `marien_bridge_statement`. The transformer builds a `StandaloneCallFunction` (or `CALL elpi_validate(…) RETURN *`) with literal arguments, copying the function node from LadybugDB's own parse of `CALL <fn>()`, and returns nothing for text that is not Marien's. LadybugDB 0.22.1 reaches it only with `CREATE USER` and `CREATE ROLE`, so `CALL elpi_statement('<statement>')` runs statements through the bind of their `CALL` form meanwhile; the write functions' binds are shared for that.
+The grammar, the dollar-quote lexer and the desugaring are Lean (`Statement.parse`, `desugar`, proofs `desugar_total` and `source_roundtrip`), behind `marien_bridge_statement`. `elpi_statement` dispatches the desugared call to the bind core of `elpi_save`, `elpi_drop`, `elpi_recheck` or `elpi_annotate`, and rewrites `VALIDATE` into `CALL elpi_validate(…) RETURN *`. The statement must be a string literal: a query parameter is refused, since LadybugDB rewrites the `CALL` before parameters are bound.
 
 - module:: shim/statements.cpp
 - milestone:: M5
 - depends_on:: [[components#Extension shim]]
 - motivated_by:: [[decisions#CALL functions first]]
+- motivated_by:: [[decisions#Statements are a string function]]
 - introduced_by:: [[changes#add-ecosystem]]

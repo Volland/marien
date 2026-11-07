@@ -71,6 +71,10 @@ Archived to `openspec/changes/archive/2026-11-06-add-higher-order-layer/`; its r
 
 M5: offline Lean codegen from the shared encoding, the Soufflé oracle, custom statements and the upstream proposals.
 
-Released in v0.4.0 (2026-11-06, four platforms, with the new website): the schema dump and `marien-codegen` with the agreement check and two proofs (`Dump.canonical_perm`, `LeanPrinter.derive_eq_elpi`); the Soufflé oracle (`tests/oracle/souffle/run.sh`); custom statements with two proofs (`desugar_total`, `source_roundtrip`), registered as a transformer and run through `CALL elpi_statement` until LadybugDB routes them; the prebuilt Lean archive (`scripts/build-lean-archive.sh`). Filed upstream: LadybugDB/ladybug#1518 (catalog-change hook) and #1519 (extension statements). Open: the Soufflé CI job's first run, the upstream answers, the `ladybugdb/extensions` proposal (drafted).
+Released in v0.4.0 (2026-11-06, four platforms, with the new website): the schema dump and `marien-codegen` with the agreement check and two proofs (`Dump.canonical_perm`, `LeanPrinter.derive_eq_elpi`); the Soufflé oracle (`tests/oracle/souffle/run.sh`); custom statements with two proofs (`desugar_total`, `source_roundtrip`), registered as a transformer and run through `CALL elpi_statement` until LadybugDB routes them; the prebuilt Lean archive (`scripts/build-lean-archive.sh`). Filed upstream: LadybugDB/ladybug#1518 (catalog-change hook) and #1519 (extension statements). Open: the Soufflé CI job's first run, the `ladybugdb/extensions` proposal (drafted).
+
+Upstream answers (2026-11-07): #1518 declined (catalog hooks are untenable under MVCC; the WAL-tailing alternative cannot mark modules atomically), so the lazy recheck stays the only path; #1519 declined in favour of a function over a string, so the statement transformer was removed and `elpi_statement` is the statement interface. Still asked: passing bound parameters to standalone `CALL` rewrites (task 4.6).
+
+Released in v0.4.1 (2026-11-07): `elpi_statement` as the statement interface with the transformer removed, query parameters refused with their reason, the Soufflé CI job's first run (685 comparisons agree), an Apache-2.0 `LICENSE`, and the prebuilt Lean archive tested on Linux and attached to the release per OS and CPU with `SHA256SUMS-lean`.
 
 - status:: proposed
